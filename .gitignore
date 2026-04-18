@@ -1,0 +1,4 @@
+
+# devtribunal (remove these lines to version-control agents and skills)
+.devtribunal_agents/
+.claude/commands/dt/

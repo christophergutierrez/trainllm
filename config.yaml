@@ -1,0 +1,40 @@
+# trainLLM configuration — edit this file to configure a fine-tuning run.
+# All scripts read from here; env vars (TRAIN_DATA, MAX_STEPS, etc.) still override for one-offs.
+
+model: Qwen/Qwen2.5-Coder-14B-Instruct
+adapter_name: my-adapter   # LoRA module name in vLLM; drives lora/ subdirectory name
+chat_template: qwen-2.5    # Unsloth template: qwen-2.5, llama-3.1, gemma-it, chatml, …
+
+paths:
+  base_dir: ~/trainLLM
+  hf_home: ~/trainLLM/models/hf
+  unsloth_python: ~/.unsloth/studio/unsloth_studio/bin/python3
+
+data:
+  train: ~/trainLLM/data/training.jsonl
+  holdout: ~/trainLLM/data/holdout.jsonl
+
+training:
+  max_seq_length: 2048
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  warmup_steps: 50
+  max_steps: 2000
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  save_steps: 500
+  save_total_limit: 3
+
+vllm:
+  port: 8000
+  gpu_memory_utilization: 0.85
+
+timeouts:
+  train_silence: 300     # seconds of no output before killing training (GPU deadlock guard)
+  vllm_startup: 900      # seconds to wait for vLLM /v1/models to become ready
+  vllm_poll_interval: 30
+  eval_timeout: 3600     # wall timeout for eval run
