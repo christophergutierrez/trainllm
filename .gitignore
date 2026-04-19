@@ -2,3 +2,9 @@
 # devtribunal (remove these lines to version-control agents and skills)
 .devtribunal_agents/
 .claude/commands/dt/
+
+# Track data/ and logs/ as directories, but exclude their contents.
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
