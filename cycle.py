@@ -33,7 +33,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent / "handoff"))
 import _config
+import emit_synth_status
 cfg = _config.load()
 
 # ── Paths (all derived from config) ───────────────────────────────────────────
@@ -451,6 +453,7 @@ def step_start_vllm() -> subprocess.Popen:
         "--enforce-eager",   # required on Blackwell (GB10): avoids torch.compile hang
         "--enable-lora",
         "--lora-modules", f"{LORA_MODEL}={FINAL_DIR}",
+        "--max-lora-rank", str(cfg.training.lora_rank),
         "--port", str(cfg.vllm_port),
     ]
     env = {**os.environ, "HF_HOME": HF_HOME}
@@ -570,6 +573,21 @@ def step_eval(model: str, label: str) -> Path | None:
     return result
 
 
+# ── Step 5b: Emit synth_status.yaml ───────────────────────────────────────────
+
+def step_emit_synth_status(ft_path: Path | None) -> Path | None:
+    if not ft_path:
+        return None
+    log_section("STEP 5b: Emit synth_status.yaml for reposynth handoff")
+    try:
+        out_path = emit_synth_status.emit(ft_path)
+    except Exception as exc:
+        log(f"synth_status emit failed: {exc}", "WARN")
+        return None
+    log(f"synth_status: {out_path}")
+    return out_path
+
+
 # ── Step 6: Report ────────────────────────────────────────────────────────────
 
 def _load_eval(path: Path) -> dict | None:
@@ -585,7 +603,7 @@ def _score_bar(score: float, width: int = 30) -> str:
     return "[" + "█" * filled + "·" * (width - filled) + f"] {score:.2f}"
 
 
-def step_report(ft_path: Path | None, base_path: Path | None) -> None:
+def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path | None = None) -> None:
     log_section("STEP 6: Results summary and recommendations")
 
     ft_data   = _load_eval(ft_path)   if ft_path   else None
@@ -733,6 +751,8 @@ def step_report(ft_path: Path | None, base_path: Path | None) -> None:
         r(f"    Fine-tuned: {ft_path.with_suffix('.md')}")
     if base_path:
         r(f"    Base:       {base_path.with_suffix('.md')}")
+    if status_path:
+        r(f"    Synth status (for reposynth): {status_path}")
     r()
     r(f"  Full cycle log: {LOG_PATH}")
     r("=" * 64)
@@ -820,8 +840,9 @@ def main() -> None:
         else:
             log("Skipping vLLM start (--skip-serve) — assuming server is already running")
 
-        ft_path   = None
-        base_path = None
+        ft_path     = None
+        base_path   = None
+        status_path = None
 
         if not args.skip_eval:
             t0 = time.time()
@@ -835,7 +856,9 @@ def main() -> None:
             else:
                 log("Skipping base model eval (--skip-base-eval)")
 
-        step_report(ft_path, base_path)
+            status_path = step_emit_synth_status(ft_path)
+
+        step_report(ft_path, base_path, status_path)
 
     except KeyboardInterrupt:
         log("Interrupted by user", "WARN")

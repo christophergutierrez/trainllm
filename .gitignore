@@ -1,4 +1,3 @@
-
 # devtribunal (remove these lines to version-control agents and skills)
 .devtribunal_agents/
 .claude/commands/dt/
@@ -8,3 +7,12 @@ data/*
 !data/.gitkeep
 logs/*
 !logs/.gitkeep
+lora/*
+!lora/.gitkeep
+config.yaml
+__pycache__/
+evals/*
+handoff
+models/
+unsloth*
+config.yaml

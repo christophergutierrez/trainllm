@@ -33,6 +33,9 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
     device_map={"": torch.cuda.current_device()},
     attn_implementation="sdpa",
+    # Skip Unsloth's internal redirect to `unsloth/...-bnb-4bit`; load the
+    # original repo and quantize at load time. Avoids a redundant 9 GB download.
+    use_exact_model_name=True,
 )
 
 model = FastLanguageModel.get_peft_model(
