@@ -54,14 +54,14 @@ training:
   weight_decay: 0.01
   lr_scheduler: cosine
   save_steps: 500
-  save_total_limit: 3
+  save_total_limit: null   # null = keep all checkpoints, required for best-checkpoint selection
 
 vllm:
   port: 8000
   gpu_memory_utilization: 0.85
 
 timeouts:
-  train_silence: 300     # seconds; kills training if no output (GPU deadlock guard)
+  train_silence: 1800    # seconds; kills training if no output; 1800 accommodates first-time model download
   vllm_startup: 900      # seconds to wait for /v1/models to become ready
   vllm_poll_interval: 30
   eval_timeout: 3600
@@ -199,6 +199,7 @@ MODEL=Qwen/Qwen2.5-Coder-14B-Instruct python ~/trainLLM/eval.py
 | `lora/<adapter_name>/final-v<date>/` | Backup of previous adapter before each run |
 | `evals/<timestamp>_<model>.md` | Human-readable eval report |
 | `evals/<timestamp>_<model>.json` | Raw eval data for programmatic use |
+| `evals/<timestamp>_<model>_synth_status.yaml` | Handoff status for reposynth (emitted by step 5b) |
 | `logs/cycle_<timestamp>.log` | Full cycle log |
 
 ## Interpreting results

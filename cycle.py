@@ -7,6 +7,9 @@ Usage:
     python ~/trainLLM/cycle.py --version 20260416         # training_20260416.jsonl + holdout_20260416.jsonl
     python ~/trainLLM/cycle.py --skip-train               # serve + eval only
     python ~/trainLLM/cycle.py --skip-train --skip-serve  # eval only
+    python ~/trainLLM/cycle.py --holdout ~/data/holdout_v2.jsonl  # override holdout
+    python ~/trainLLM/cycle.py --auto-steps                       # compute steps from data size
+    python ~/trainLLM/cycle.py --no-best-checkpoint               # skip checkpoint selection
 
 Reading the report:
     - Fine-tuned avg > base avg by ≥0.05 means training is helping.
@@ -17,6 +20,7 @@ Logs: <base_dir>/logs/cycle_<timestamp>.log
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -84,6 +88,7 @@ def _setup_logging() -> None:
     TIMESTAMP = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     LOG_PATH  = LOGS_DIR / f"cycle_{TIMESTAMP}.log"
     _log_file = open(LOG_PATH, "w", buffering=1)
+    atexit.register(_log_file.close)
 
 
 def log(msg: str, level: str = "INFO") -> None:
@@ -226,7 +231,7 @@ def _validate_training_data() -> int:
             if not line:
                 continue
             records += 1
-            if records > 3:
+            if records > 3:  # Intentional: only validate first 3 records for speed, not comprehensive schema check
                 continue
             try:
                 rec = json.loads(line)
@@ -703,8 +708,12 @@ def step_select_best_checkpoint() -> Path | None:
             log(f"  (final/ scored {final_score:.4f}; "
                 f"winner beats it by {winner_score - final_score:+.4f})")
         log(f"Promoting {winner_path} → {FINAL_DIR}")
+        tmp = FINAL_DIR.with_suffix(".tmp_promote")
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        shutil.copytree(winner_path, tmp)
         shutil.rmtree(FINAL_DIR)
-        shutil.copytree(winner_path, FINAL_DIR)
+        tmp.rename(FINAL_DIR)
         log("final/ now holds the winning checkpoint")
 
     return winner_eval
@@ -976,7 +985,7 @@ def main() -> None:
             if args.canary:
                 max_steps_override = 300
                 log("Canary mode: max_steps=300")
-            elif args.steps:
+            elif args.steps is not None:
                 max_steps_override = args.steps
             t0 = time.time()
             step_train(max_steps=max_steps_override,

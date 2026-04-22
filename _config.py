@@ -6,6 +6,13 @@ from types import SimpleNamespace
 
 _HERE = Path(__file__).parent
 
+_KNOWN_TRAINING_KEYS = {
+    "max_seq_length", "lora_rank", "lora_alpha", "lora_dropout",
+    "batch_size", "gradient_accumulation_steps", "warmup_steps",
+    "max_steps", "learning_rate", "weight_decay", "lr_scheduler",
+    "save_steps", "save_total_limit",
+}
+
 
 def load(config_path: Path | None = None) -> SimpleNamespace:
     try:
@@ -23,35 +30,47 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
     def exp(s: str) -> Path:
         return Path(os.path.expanduser(str(s)))
 
-    base_dir     = exp(raw["paths"]["base_dir"])
-    adapter_name = raw["adapter_name"]
+    try:
+        base_dir     = exp(raw["paths"]["base_dir"])
+        adapter_name = raw["adapter_name"]
 
-    return SimpleNamespace(
-        model         = raw["model"],
-        adapter_name  = adapter_name,
-        chat_template = raw.get("chat_template", "chatml"),
+        unknown_training = set(raw.get("training", {})) - _KNOWN_TRAINING_KEYS
+        if unknown_training:
+            raise SystemExit(
+                f"config.yaml has unknown training keys: {unknown_training}. "
+                f"Check for typos. Valid keys: {sorted(_KNOWN_TRAINING_KEYS)}"
+            )
 
-        base_dir        = base_dir,
-        hf_home         = exp(raw["paths"]["hf_home"]),
-        unsloth_python  = exp(raw["paths"]["unsloth_python"]),
+        return SimpleNamespace(
+            model         = raw["model"],
+            adapter_name  = adapter_name,
+            chat_template = raw.get("chat_template", "chatml"),
 
-        data_dir  = base_dir / "data",
-        lora_dir  = base_dir / "lora" / adapter_name,
-        final_dir = base_dir / "lora" / adapter_name / "final",
-        evals_dir = base_dir / "evals",
-        logs_dir  = base_dir / "logs",
+            base_dir        = base_dir,
+            hf_home         = exp(raw["paths"]["hf_home"]),
+            unsloth_python  = exp(raw["paths"]["unsloth_python"]),
 
-        train_data = exp(raw["data"]["train"]),
-        holdout    = exp(raw["data"]["holdout"]),
+            data_dir  = base_dir / "data",
+            lora_dir  = base_dir / "lora" / adapter_name,
+            final_dir = base_dir / "lora" / adapter_name / "final",
+            evals_dir = base_dir / "evals",
+            logs_dir  = base_dir / "logs",
 
-        training = SimpleNamespace(**raw["training"]),
+            train_data = exp(raw["data"]["train"]),
+            holdout    = exp(raw["data"]["holdout"]),
 
-        vllm_url                  = f"http://localhost:{raw['vllm']['port']}",
-        vllm_port                 = raw["vllm"]["port"],
-        vllm_gpu_memory_util      = raw["vllm"]["gpu_memory_utilization"],
+            training = SimpleNamespace(**raw["training"]),
 
-        train_silence_timeout = raw["timeouts"]["train_silence"],
-        vllm_startup_timeout  = raw["timeouts"]["vllm_startup"],
-        vllm_poll_interval    = raw["timeouts"]["vllm_poll_interval"],
-        eval_timeout          = raw["timeouts"]["eval_timeout"],
-    )
+            vllm_url                  = f"http://localhost:{raw['vllm']['port']}",
+            vllm_port                 = raw["vllm"]["port"],
+            vllm_gpu_memory_util      = raw["vllm"]["gpu_memory_utilization"],
+
+            train_silence_timeout = raw["timeouts"]["train_silence"],
+            vllm_startup_timeout  = raw["timeouts"]["vllm_startup"],
+            vllm_poll_interval    = raw["timeouts"]["vllm_poll_interval"],
+            eval_timeout          = raw["timeouts"]["eval_timeout"],
+        )
+    except KeyError as e:
+        raise SystemExit(
+            f"config.yaml is missing required key: {e}. Verify {path} matches config.example.yaml."
+        ) from e

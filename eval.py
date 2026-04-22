@@ -6,6 +6,7 @@ Usage:
     python eval.py                                         # adapter from config.yaml
     MODEL=Qwen/Qwen2.5-Coder-14B-Instruct python eval.py  # base model
     HOLDOUT=~/data/holdout.jsonl python eval.py            # explicit holdout path
+    VLLM_URL=http://localhost:8000 python eval.py          # override vLLM server URL
 
 Holdout format (JSONL):
     {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}],
@@ -70,14 +71,15 @@ def query(record: dict) -> tuple[str, str, float, dict]:
                 for m in record["messages"] if m["role"] != "assistant"]
     expected = next(m["content"] for m in record["messages"] if m["role"] == "assistant")
     resp = client.chat.completions.create(model=MODEL, messages=messages, max_tokens=1024)
-    generated = resp.choices[0].message.content
+    generated = resp.choices[0].message.content or ""
     diag = _diagnostics(generated, expected)
     return generated, expected, similarity(expected, generated), diag
 
 
 # ── Run evaluation ─────────────────────────────────────────────────────────────
 
-records = [json.loads(l) for l in open(DATA)]
+with open(DATA) as fh:
+    records = [json.loads(l) for l in fh]
 timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
 safe_model = MODEL.replace("/", "_")
 

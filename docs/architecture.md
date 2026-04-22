@@ -112,8 +112,10 @@ The adapter is saved to `lora/<adapter_name>/` as checkpoints every `save_steps`
 1. Backup      Copy lora/<adapter>/final → lora/<adapter>/final-v<date>
 2. Stop vLLM   SIGTERM → wait 3s → SIGKILL if still running
 3. Train       Run train.py under Unsloth Python; stream and parse output
-4. Start vLLM  Launch vllm serve; poll /v1/models until ready
-5. Eval        Run eval.py twice: once for the adapter, once for the base model
+4. Start vLLM  Launch vllm serve with final/ + saved checkpoints; poll /v1/models until ready
+5. Eval        Run eval.py for each candidate (final/ + saved checkpoints)
+5a. Best-checkpoint  Score each checkpoint; promote highest-scoring to final/ (atomic: copy to .tmp_promote → rename)
+5b. Synth status     Emit synth_status.yaml from winning eval for reposynth handoff
 6. Report      Compare scores, print diagnosis, log paths to eval reports
 ```
 

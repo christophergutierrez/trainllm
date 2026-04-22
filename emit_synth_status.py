@@ -149,7 +149,8 @@ def build_status(eval_path: Path) -> dict:
     adapter_runs = [p for p in _adapter_evals(evals_dir, meta["model"]) if p != eval_path]
     prev_avg = _load_eval(adapter_runs[-1])["summary"]["avg_score"] if adapter_runs else None
 
-    base_file = _latest_base_before(_base_evals(evals_dir, meta["base_model"]), eval_path.stem)
+    base_model_key = meta.get("base_model", "")
+    base_file = _latest_base_before(_base_evals(evals_dir, base_model_key), eval_path.stem) if base_model_key else None
     base_avg = _load_eval(base_file)["summary"]["avg_score"] if base_file else None
 
     band_counts = summary["band_counts"]
