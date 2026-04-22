@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _config
 cfg = _config.load()
 
-from openai import OpenAI
+from openai import OpenAI  # noqa: E402
 
 BASE_URL  = os.environ.get("VLLM_URL",  cfg.vllm_url)
 MODEL     = os.environ.get("MODEL",     cfg.adapter_name)
@@ -44,9 +44,12 @@ THRESHOLDS = {"excellent": 0.8, "good": 0.6, "partial": 0.4}
 
 
 def band(score: float) -> str:
-    if score >= THRESHOLDS["excellent"]: return "EXCELLENT"
-    if score >= THRESHOLDS["good"]:      return "GOOD"
-    if score >= THRESHOLDS["partial"]:   return "PARTIAL"
+    if score >= THRESHOLDS["excellent"]:
+        return "EXCELLENT"
+    if score >= THRESHOLDS["good"]:
+        return "GOOD"
+    if score >= THRESHOLDS["partial"]:
+        return "PARTIAL"
     return "POOR"
 
 
@@ -79,7 +82,7 @@ def query(record: dict) -> tuple[str, str, float, dict]:
 # ── Run evaluation ─────────────────────────────────────────────────────────────
 
 with open(DATA) as fh:
-    records = [json.loads(l) for l in fh]
+    records = [json.loads(line) for line in fh]
 timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
 safe_model = MODEL.replace("/", "_")
 
@@ -124,7 +127,7 @@ for i, r in enumerate(records):
 
 scores      = [r["score"] for r in results if r["band"] != "ERROR"]
 avg         = sum(scores) / len(scores) if scores else 0.0
-band_counts = defaultdict(int)
+band_counts: defaultdict[str, int] = defaultdict(int)
 for r in results:
     band_counts[r["band"]] += 1
 

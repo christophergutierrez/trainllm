@@ -257,8 +257,8 @@ def _validate_training_data() -> int:
 
     if errors:
         log("Training data format validation FAILED:", "WARN")
-        for e in errors:
-            log(e, "WARN")
+        for err in errors:
+            log(err, "WARN")
         die(
             f"{TRAIN_DATA.name} is not in ShareGPT format.\n"
             '  Expected: {"conversations": [{"from": "human", "value": "..."},\n'
@@ -354,7 +354,7 @@ def _manifest_max_steps() -> int | None:
     if not path.exists():
         return None
     try:
-        import yaml
+        import yaml  # type: ignore[import-untyped]
         m = yaml.safe_load(path.read_text()) or {}
     except Exception as exc:
         log(f"Could not read {path}: {exc}", "WARN")

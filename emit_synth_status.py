@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import _config
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 cfg = _config.load()
 
@@ -87,7 +87,7 @@ def _format_health(results: list) -> dict:
             if line.strip().startswith("func "):
                 break
             preamble.append(line)
-        if any(l.strip().startswith(("package ", "import ", "import(")) for l in preamble):
+        if any(ln.strip().startswith(("package ", "import ", "import(")) for ln in preamble):
             boilerplate_cases.append({
                 "func": r["label"],
                 "score": round(r["score"], 3),

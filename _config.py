@@ -16,7 +16,7 @@ _KNOWN_TRAINING_KEYS = {
 
 def load(config_path: Path | None = None) -> SimpleNamespace:
     try:
-        import yaml
+        import yaml  # type: ignore[import-untyped]
     except ImportError:
         raise SystemExit(
             "PyYAML not found. Install it: pip install pyyaml\n"
