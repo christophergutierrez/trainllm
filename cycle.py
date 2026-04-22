@@ -328,7 +328,43 @@ def step_stop_vllm() -> None:
 
 # ── Step 3: Train ─────────────────────────────────────────────────────────────
 
-def step_train(max_steps: int | None = None) -> None:
+def _auto_max_steps(n_records: int, target_epochs: int = 4) -> int:
+    eff_batch = cfg.training.batch_size * cfg.training.gradient_accumulation_steps
+    steps_per_epoch = max(1, n_records // eff_batch)
+    return max(1, target_epochs * steps_per_epoch)
+
+
+def _clear_stale_checkpoints() -> None:
+    stale = sorted(LORA_DIR.glob("checkpoint-*"))
+    if not stale:
+        return
+    log(f"Removing {len(stale)} stale checkpoint dir(s) from prior runs")
+    for d in stale:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _manifest_max_steps() -> int | None:
+    """Return meta.max_steps from data/manifest.yaml if set, else None."""
+    path = DATA_DIR / "manifest.yaml"
+    if not path.exists():
+        return None
+    try:
+        import yaml
+        m = yaml.safe_load(path.read_text()) or {}
+    except Exception as exc:
+        log(f"Could not read {path}: {exc}", "WARN")
+        return None
+    v = ((m.get("meta") or {}).get("max_steps"))
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        log(f"Ignoring non-integer meta.max_steps={v!r} in {path}", "WARN")
+        return None
+
+
+def step_train(max_steps: int | None = None, auto_steps: bool = False) -> None:
     log_section("STEP 3: Train (QLoRA via Unsloth)")
     log(f"Training script: {TRAIN_SCRIPT}")
     log(f"Training data:   {TRAIN_DATA}")
@@ -338,7 +374,28 @@ def step_train(max_steps: int | None = None) -> None:
     if not Path(UNSLOTH_PYTHON).exists():
         die(f"Unsloth Python not found at {UNSLOTH_PYTHON}. Check paths.unsloth_python in config.yaml.")
 
-    _validate_training_data()
+    n_records = _validate_training_data()
+
+    # Precedence when no CLI override is passed (--steps, --canary handled by caller):
+    #   1. manifest meta.max_steps (reposynth's per-cycle recommendation)
+    #   2. --auto-steps formula (4 epochs × records / effective_batch)
+    #   3. config default (falls through as max_steps stays None)
+    if max_steps is None:
+        manifest_steps = _manifest_max_steps()
+        if manifest_steps is not None:
+            max_steps = manifest_steps
+            eff_batch = cfg.training.batch_size * cfg.training.gradient_accumulation_steps
+            epochs = max_steps / max(1, n_records // eff_batch)
+            log(f"max_steps from manifest: {max_steps} steps (~{epochs:.1f} epochs on "
+                f"{n_records} records)")
+        elif auto_steps:
+            max_steps = _auto_max_steps(n_records)
+            eff_batch = cfg.training.batch_size * cfg.training.gradient_accumulation_steps
+            epochs = max_steps / max(1, n_records // eff_batch)
+            log(f"Auto max_steps: {n_records} records × 4 epochs / {eff_batch} batch "
+                f"→ {max_steps} steps (~{epochs:.1f} epochs)")
+
+    _clear_stale_checkpoints()
 
     loss_points: list[tuple[float, float]] = []
     warned_loss = False
@@ -443,8 +500,32 @@ def step_train(max_steps: int | None = None) -> None:
 
 # ── Step 4: Start vLLM ────────────────────────────────────────────────────────
 
-def step_start_vllm() -> subprocess.Popen:
+def _checkpoint_dirs() -> list[Path]:
+    def step_num(p: Path) -> int:
+        try:
+            return int(p.name.split("-")[1])
+        except (IndexError, ValueError):
+            return -1
+    return sorted(
+        (p for p in LORA_DIR.glob("checkpoint-*") if p.is_dir() and step_num(p) > 0),
+        key=step_num,
+    )
+
+
+def _checkpoint_module_name(cp: Path) -> str:
+    return f"{LORA_MODEL}-ckpt{cp.name.split('-')[1]}"
+
+
+def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen:
     log_section("STEP 4: Start vLLM inference server")
+
+    lora_modules = [f"{LORA_MODEL}={FINAL_DIR}"]
+    if include_checkpoints:
+        for cp in _checkpoint_dirs():
+            lora_modules.append(f"{_checkpoint_module_name(cp)}={cp}")
+        if len(lora_modules) > 1:
+            log(f"Loading {len(lora_modules)} LoRA modules (final + "
+                f"{len(lora_modules)-1} checkpoint(s)) for best-checkpoint selection")
 
     cmd = [
         "vllm", "serve", BASE_MODEL,
@@ -452,7 +533,7 @@ def step_start_vllm() -> subprocess.Popen:
         "--gpu-memory-utilization", str(cfg.vllm_gpu_memory_util),
         "--enforce-eager",   # required on Blackwell (GB10): avoids torch.compile hang
         "--enable-lora",
-        "--lora-modules", f"{LORA_MODEL}={FINAL_DIR}",
+        "--lora-modules", *lora_modules,
         "--max-lora-rank", str(cfg.training.lora_rank),
         "--port", str(cfg.vllm_port),
     ]
@@ -571,6 +652,62 @@ def step_eval(model: str, label: str) -> Path | None:
     else:
         log("Could not find eval output file", "WARN")
     return result
+
+
+# ── Step 5a: Best-checkpoint selection ────────────────────────────────────────
+
+def step_select_best_checkpoint() -> Path | None:
+    """Eval each saved checkpoint + final, promote the highest-scoring to final/.
+
+    Returns the eval JSON path for the winning adapter so step_report can use it.
+    Falls back to a standard eval of final/ if no intermediate checkpoints exist.
+    """
+    ckpts = _checkpoint_dirs()
+    if not ckpts:
+        log("No intermediate checkpoints saved — evaluating final/ directly")
+        return step_eval(LORA_MODEL, "fine-tuned")
+
+    log_section(f"STEP 5a: Best-checkpoint selection ({len(ckpts) + 1} candidates)")
+
+    candidates: list[tuple[str, Path]] = [(LORA_MODEL, FINAL_DIR)]
+    for cp in ckpts:
+        candidates.append((_checkpoint_module_name(cp), cp))
+
+    scored: list[tuple[str, Path, float, Path]] = []
+    for model_name, ckpt_path in candidates:
+        label = "final" if ckpt_path == FINAL_DIR else ckpt_path.name
+        eval_path = step_eval(model_name, label)
+        if not eval_path:
+            log(f"  {model_name}: eval failed or returned no file", "WARN")
+            continue
+        data = _load_eval(eval_path)
+        if not data:
+            continue
+        score = data["summary"]["avg_score"]
+        log(f"  {label:18s} ({model_name}): avg {score:.4f}")
+        scored.append((model_name, ckpt_path, score, eval_path))
+
+    if not scored:
+        log("All checkpoint evals failed — no winner to select", "WARN")
+        return None
+
+    winner_name, winner_path, winner_score, winner_eval = max(scored, key=lambda x: x[2])
+    final_score = next((s for _n, p, s, _e in scored if p == FINAL_DIR), None)
+
+    log("")
+    log(f"Winner: {winner_path.name} ({winner_name}) with avg {winner_score:.4f}")
+    if winner_path == FINAL_DIR:
+        log("final/ was already the best — no promotion needed")
+    else:
+        if final_score is not None:
+            log(f"  (final/ scored {final_score:.4f}; "
+                f"winner beats it by {winner_score - final_score:+.4f})")
+        log(f"Promoting {winner_path} → {FINAL_DIR}")
+        shutil.rmtree(FINAL_DIR)
+        shutil.copytree(winner_path, FINAL_DIR)
+        log("final/ now holds the winning checkpoint")
+
+    return winner_eval
 
 
 # ── Step 5b: Emit synth_status.yaml ───────────────────────────────────────────
@@ -777,6 +914,17 @@ def parse_args() -> argparse.Namespace:
                    help="Quick validation: train for 300 steps instead of max_steps (~35 min vs full run).")
     p.add_argument("--steps", type=int, metavar="N",
                    help="Override max_steps from config.yaml (ignored if --skip-train).")
+    p.add_argument("--auto-steps", action="store_true",
+                   help=(
+                       "Compute max_steps as 4 × records / effective_batch (≈4 epochs). "
+                       "Ignored if --steps or --canary is also set."
+                   ))
+    p.add_argument("--no-best-checkpoint", action="store_true",
+                   help=(
+                       "Skip best-checkpoint selection. By default, cycle.py evaluates every "
+                       "saved checkpoint after training and promotes the highest-scoring one "
+                       "to final/. Use this flag to keep the last-step adapter unconditionally."
+                   ))
     p.add_argument("--holdout", metavar="PATH",
                    help="Override holdout file path for eval.")
     return p.parse_args()
@@ -803,7 +951,8 @@ def main() -> None:
     log(f"Holdout:    {HOLDOUT}")
     log(f"Flags: skip_train={args.skip_train} skip_serve={args.skip_serve} "
         f"skip_eval={args.skip_eval} skip_base_eval={args.skip_base_eval} "
-        f"canary={args.canary} steps={args.steps}")
+        f"canary={args.canary} steps={args.steps} auto_steps={args.auto_steps} "
+        f"no_best_checkpoint={args.no_best_checkpoint}")
 
     if not args.skip_eval and not HOLDOUT.exists():
         die(f"Holdout file not found: {HOLDOUT}\n  Fix: place your holdout JSONL at that path, or use --holdout.")
@@ -830,12 +979,15 @@ def main() -> None:
             elif args.steps:
                 max_steps_override = args.steps
             t0 = time.time()
-            step_train(max_steps=max_steps_override)
+            step_train(max_steps=max_steps_override,
+                       auto_steps=args.auto_steps and not args.canary)
             log(f"Training step completed in {_elapsed(t0)}")
+
+        do_best_checkpoint = not args.no_best_checkpoint and not args.skip_train
 
         if not args.skip_serve:
             t0 = time.time()
-            vllm_proc = step_start_vllm()
+            vllm_proc = step_start_vllm(include_checkpoints=do_best_checkpoint)
             log(f"vLLM startup completed in {_elapsed(t0)}")
         else:
             log("Skipping vLLM start (--skip-serve) — assuming server is already running")
@@ -846,7 +998,10 @@ def main() -> None:
 
         if not args.skip_eval:
             t0 = time.time()
-            ft_path = step_eval(LORA_MODEL, "fine-tuned")
+            if do_best_checkpoint:
+                ft_path = step_select_best_checkpoint()
+            else:
+                ft_path = step_eval(LORA_MODEL, "fine-tuned")
             log(f"Fine-tuned eval completed in {_elapsed(t0)}")
 
             if not args.skip_base_eval:

@@ -113,8 +113,13 @@ def _uncovered(manifest: dict | None, tested: set[str]) -> list:
     if not manifest:
         return []
     tags: set[str] = set()
-    for p in manifest.get("patterns", []) or []:
+    for p in manifest.get("patterns") or []:
         tags.update(p.get("tags", []) or [])
+    training = manifest.get("training") or {}
+    if isinstance(training, dict):
+        for key in ("contrast_patterns", "patterns"):
+            for p in training.get(key) or []:
+                tags.update(p.get("tags", []) or [])
     return [{"name": t} for t in sorted(tags - tested)]
 
 

@@ -27,14 +27,14 @@ training:
   weight_decay: 0.01
   lr_scheduler: cosine
   save_steps: 500
-  save_total_limit: 3
+  save_total_limit: null   # null = keep all checkpoints (required for best-checkpoint selection in cycle.py)
 
 vllm:
   port: 8000
   gpu_memory_utilization: 0.85
 
 timeouts:
-  train_silence: 300     # seconds of no output before killing training (GPU deadlock guard)
+  train_silence: 1800    # seconds of no output before killing training (GPU deadlock guard); 1800 accommodates first-time HF model download
   vllm_startup: 900      # seconds to wait for vLLM /v1/models to become ready
   vllm_poll_interval: 30
   eval_timeout: 3600     # wall timeout for eval run
