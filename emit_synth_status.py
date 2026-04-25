@@ -139,6 +139,36 @@ def _latest_base_before(base_files: list[Path], current_stem: str) -> Path | Non
     return base_files[-1] if base_files else None
 
 
+def _seed_candidates(results: list, boost: list) -> dict:
+    """For each boost_convention at critical/high priority, return up to 3 lowest-scoring
+    holdout records with id/label/score/conventions_tested/prompt/expected/generated
+    (expected and generated are fence-stripped). Lets reposynth seed failure-shape-matched
+    contrast pairs without opening the eval JSON separately.
+    """
+    target_convs = {b["name"] for b in boost if b.get("priority") in ("critical", "high")}
+    if not target_convs:
+        return {}
+    out: dict = {}
+    for conv in sorted(target_convs):
+        matches = [r for r in results
+                   if conv in (r.get("conventions_tested") or [])
+                   and r.get("band") != "ERROR"]
+        matches.sort(key=lambda r: r.get("score", 1.0))
+        out[conv] = [
+            {
+                "id":                 r.get("id", ""),
+                "label":              r.get("label", ""),
+                "score":              round(r.get("score", 0.0), 3),
+                "conventions_tested": r.get("conventions_tested", []),
+                "prompt":             r.get("prompt", ""),
+                "expected":           _strip_fences(r.get("expected", "")),
+                "generated":          _strip_fences(r.get("generated", "")),
+            }
+            for r in matches[:3]
+        ]
+    return out
+
+
 def build_status(eval_path: Path) -> dict:
     ev = _load_eval(eval_path)
     meta = ev["meta"]
@@ -199,6 +229,7 @@ def build_status(eval_path: Path) -> dict:
         "skip_conventions": skip,
         "uncovered_conventions": _uncovered(manifest, tested),
         "format_health": _format_health(results),
+        "seed_candidates": _seed_candidates(results, boost),
     }
 
 

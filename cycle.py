@@ -833,6 +833,23 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
             r(f"  vs previous run ({prev_path.stem[:16]}):  "
               f"{prev_avg:.2f} → {curr_avg:.2f}  {arrow}{abs(delta_vs_prev):.2f}")
 
+            prev_conv = {c["convention"]: c["avg"]
+                         for c in prev_data["summary"].get("convention_breakdown", [])}
+            curr_conv = {c["convention"]: c["avg"]
+                         for c in ft_data["summary"].get("convention_breakdown", [])}
+            shared_conv = set(prev_conv) & set(curr_conv)
+            if shared_conv:
+                deltas = [(c, prev_conv[c], curr_conv[c], curr_conv[c] - prev_conv[c])
+                          for c in shared_conv]
+                deltas.sort(key=lambda t: abs(t[3]), reverse=True)
+                r("  Convention deltas (sorted by |change|):")
+                for conv, prev, curr, d in deltas:
+                    if abs(d) < 0.005:
+                        arrow_c = "→"
+                    else:
+                        arrow_c = "▲" if d > 0 else "▼"
+                    r(f"    {conv:28s}  {prev:.2f} → {curr:.2f}  {arrow_c}{abs(d):.2f}")
+
             prev_by_id   = {res["id"]: res["score"] for res in prev_data.get("results", [])}
             regressions  = []
             improvements = []

@@ -73,7 +73,13 @@ def query(record: dict) -> tuple[str, str, float, dict]:
     messages = [{"role": m["role"], "content": m["content"]}
                 for m in record["messages"] if m["role"] != "assistant"]
     expected = next(m["content"] for m in record["messages"] if m["role"] == "assistant")
-    resp = client.chat.completions.create(model=MODEL, messages=messages, max_tokens=1024)
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.0,  # deterministic greedy decoding — eliminates vLLM sampling variance
+        seed=42,
+    )
     generated = resp.choices[0].message.content or ""
     diag = _diagnostics(generated, expected)
     return generated, expected, similarity(expected, generated), diag
