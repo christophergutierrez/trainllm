@@ -302,6 +302,9 @@ def step_backup() -> None:
 
 def step_stop_vllm() -> None:
     log_section("STEP 2: Stop any running vLLM server")
+    if cfg.runtime == "external":
+        log("runtime=external — server is user-managed; skipping stop")
+        return
     result = subprocess.run(["pgrep", "-f", "vllm serve"], capture_output=True, text=True)
     pids = result.stdout.strip().split()
     if not pids or not any(p.strip() for p in pids):
@@ -521,8 +524,30 @@ def _checkpoint_module_name(cp: Path) -> str:
     return f"{LORA_MODEL}-ckpt{cp.name.split('-')[1]}"
 
 
-def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen:
+def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | None:
     log_section("STEP 4: Start vLLM inference server")
+
+    if cfg.runtime == "external":
+        log(f"runtime=external — expecting OpenAI-compatible server at {VLLM_URL}")
+        try:
+            with urllib.request.urlopen(f"{VLLM_URL}/v1/models", timeout=5) as resp:
+                data = json.loads(resp.read())
+                model_ids = [m["id"] for m in data.get("data", [])]
+                log(f"  Server reachable. Models: {model_ids}")
+                if LORA_MODEL not in model_ids:
+                    log(
+                        f"  WARNING: '{LORA_MODEL}' not in {model_ids}. "
+                        "Eval will only succeed if you point MODEL at one of those names "
+                        "or configure your server to expose this adapter.",
+                        "WARN",
+                    )
+        except Exception as exc:
+            die(
+                f"External server at {VLLM_URL} not reachable: {exc}\n"
+                "  Start your OpenAI-compatible server before running cycle.py, "
+                "or set runtime: vllm in config.yaml."
+            )
+        return None
 
     lora_modules = [f"{LORA_MODEL}={FINAL_DIR}"]
     if include_checkpoints:
@@ -666,7 +691,17 @@ def step_select_best_checkpoint() -> Path | None:
 
     Returns the eval JSON path for the winning adapter so step_report can use it.
     Falls back to a standard eval of final/ if no intermediate checkpoints exist.
+    Also falls back when runtime=external, since multi-adapter selection requires
+    a server (vLLM) that can hot-load several LoRA modules at once.
     """
+    if cfg.runtime == "external":
+        log(
+            "runtime=external — multi-adapter best-checkpoint selection requires vLLM. "
+            "Falling back to a single eval of final/.",
+            "WARN",
+        )
+        return step_eval(LORA_MODEL, "fine-tuned")
+
     ckpts = _checkpoint_dirs()
     if not ckpts:
         log("No intermediate checkpoints saved — evaluating final/ directly")

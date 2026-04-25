@@ -41,10 +41,23 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
                 f"Check for typos. Valid keys: {sorted(_KNOWN_TRAINING_KEYS)}"
             )
 
+        # Inference runtime — "vllm" (default, this machine starts vllm serve)
+        # or "external" (an OpenAI-compatible server is started by the user;
+        # cycle.py just probes it and skips multi-adapter best-checkpoint).
+        runtime = raw.get("runtime", "vllm")
+        if runtime not in ("vllm", "external"):
+            raise SystemExit(
+                f"config.yaml: runtime must be 'vllm' or 'external', got {runtime!r}"
+            )
+        vllm_block = raw.get("vllm") or {}
+        vllm_port = vllm_block.get("port", 8000)
+        vllm_gpu_memory_util = vllm_block.get("gpu_memory_utilization", 0.85)
+
         return SimpleNamespace(
             model         = raw["model"],
             adapter_name  = adapter_name,
             chat_template = raw.get("chat_template", "chatml"),
+            runtime       = runtime,
 
             base_dir        = base_dir,
             hf_home         = exp(raw["paths"]["hf_home"]),
@@ -61,9 +74,9 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
 
             training = SimpleNamespace(**raw["training"]),
 
-            vllm_url                  = f"http://localhost:{raw['vllm']['port']}",
-            vllm_port                 = raw["vllm"]["port"],
-            vllm_gpu_memory_util      = raw["vllm"]["gpu_memory_utilization"],
+            vllm_url                  = f"http://localhost:{vllm_port}",
+            vllm_port                 = vllm_port,
+            vllm_gpu_memory_util      = vllm_gpu_memory_util,
 
             train_silence_timeout = raw["timeouts"]["train_silence"],
             vllm_startup_timeout  = raw["timeouts"]["vllm_startup"],
