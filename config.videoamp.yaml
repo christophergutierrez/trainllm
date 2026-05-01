@@ -1,0 +1,49 @@
+# trainLLM config — VideoAmp API fine-tuning
+# Fine-tunes a model to translate natural language into VideoAmp API calls.
+#
+# Workflow:
+#   1. git pull                          # get latest trainLLM
+#   2. Copy apisynth/data/videoamp/ here # endpoint training.jsonl files
+#   3. python prepare_data.py \
+#        --input-dir data/videoamp \
+#        --train-out  data/training.jsonl \
+#        --holdout-out data/holdout.jsonl
+#   4. python cycle.py                   # train → eval → report
+
+model: Qwen/Qwen2.5-Coder-7B-Instruct   # 7B fits on a 24GB GPU; bump to 14B if you have 40GB+
+adapter_name: videoamp-api
+chat_template: qwen-2.5
+
+paths:
+  base_dir: ~/trainLLM
+  hf_home: ~/trainLLM/models/hf
+  unsloth_python: ~/.unsloth/studio/unsloth_studio/bin/python3
+
+data:
+  train: ~/trainLLM/data/training.jsonl
+  holdout: ~/trainLLM/data/holdout.jsonl
+
+training:
+  max_seq_length: 512      # API call responses are short; 512 is plenty and speeds up training
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0
+  batch_size: 4            # safe for 24GB with seq_len=512
+  gradient_accumulation_steps: 4
+  warmup_steps: 20
+  max_steps: 500           # ~1,300 training records × ~4 epochs at batch=4, grad_accum=4
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  save_steps: 100
+  save_total_limit: null
+
+vllm:
+  port: 8000
+  gpu_memory_utilization: 0.85
+
+timeouts:
+  train_silence: 1800
+  vllm_startup: 900
+  vllm_poll_interval: 30
+  eval_timeout: 3600
