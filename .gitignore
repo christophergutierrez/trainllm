@@ -14,5 +14,6 @@ __pycache__/
 evals/*
 handoff
 models/
+archive/
 unsloth*
 config.yaml
