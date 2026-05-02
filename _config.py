@@ -23,7 +23,13 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
             "Or in the Unsloth env: ~/.unsloth/studio/unsloth_studio/bin/pip install pyyaml"
         )
 
-    path = config_path or (_HERE / "config.yaml")
+    env_path = os.environ.get("TRAINLLM_CONFIG")
+    if config_path is not None:
+        path = config_path
+    elif env_path:
+        path = Path(env_path).expanduser()
+    else:
+        path = _HERE / "config.yaml"
     with open(path) as f:
         raw = yaml.safe_load(f)
 

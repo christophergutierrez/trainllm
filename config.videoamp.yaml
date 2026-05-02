@@ -10,28 +10,28 @@
 #        --holdout-out data/holdout.jsonl
 #   4. python cycle.py                   # train → eval → report
 
-model: Qwen/Qwen2.5-Coder-7B-Instruct   # 7B fits on a 24GB GPU; bump to 14B if you have 40GB+
+model: Qwen/Qwen2.5-Coder-1.5B-Instruct   # 1.5B is plenty for slot-filling + JSON; trains/serves much faster than 7B
 adapter_name: videoamp-api
 chat_template: qwen-2.5
 
 paths:
-  base_dir: ~/trainLLM
-  hf_home: ~/trainLLM/models/hf
+  base_dir: ~/git_home/trainLLM
+  hf_home: ~/git_home/trainLLM/models/hf
   unsloth_python: ~/.unsloth/studio/unsloth_studio/bin/python3
 
 data:
-  train: ~/trainLLM/data/training.jsonl
-  holdout: ~/trainLLM/data/holdout.jsonl
+  train: ~/git_home/trainLLM/data/training.jsonl
+  holdout: ~/git_home/trainLLM/data/holdout.jsonl
 
 training:
   max_seq_length: 512      # API call responses are short; 512 is plenty and speeds up training
   lora_rank: 16
   lora_alpha: 32
   lora_dropout: 0
-  batch_size: 4            # safe for 24GB with seq_len=512
+  batch_size: 8            # 1.5B has plenty of headroom on GB10
   gradient_accumulation_steps: 4
   warmup_steps: 20
-  max_steps: 500           # ~1,300 training records × ~4 epochs at batch=4, grad_accum=4
+  max_steps: 400           # ~1,324 training records × ~10 epochs at batch=8, grad_accum=4
   learning_rate: 2.0e-4
   weight_decay: 0.01
   lr_scheduler: cosine

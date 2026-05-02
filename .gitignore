@@ -5,6 +5,8 @@
 # Track data/ and logs/ as directories, but exclude their contents.
 data/*
 !data/.gitkeep
+# Durable local API training inputs and per-endpoint prepared artifacts live
+# under data/ and stay out of git by design.
 logs/*
 !logs/.gitkeep
 lora/*
@@ -17,3 +19,4 @@ models/
 archive/
 unsloth*
 config.yaml
+tmp/

@@ -305,8 +305,11 @@ def step_stop_vllm() -> None:
     if cfg.runtime == "external":
         log("runtime=external — server is user-managed; skipping stop")
         return
-    result = subprocess.run(["pgrep", "-f", "vllm serve"], capture_output=True, text=True)
-    pids = result.stdout.strip().split()
+    patterns = ["vllm serve", "VLLM::EngineCore", "api_server.py"]
+    pids: set[str] = set()
+    for pattern in patterns:
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+        pids.update(pid.strip() for pid in result.stdout.strip().split() if pid.strip())
     if not pids or not any(p.strip() for p in pids):
         log("No vllm serve process found — nothing to stop")
         return
@@ -320,8 +323,10 @@ def step_stop_vllm() -> None:
         except ProcessLookupError:
             log(f"PID {pid} already gone")
     time.sleep(3)
-    result = subprocess.run(["pgrep", "-f", "vllm serve"], capture_output=True, text=True)
-    pids = result.stdout.strip().split()
+    pids = set()
+    for pattern in patterns:
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+        pids.update(pid.strip() for pid in result.stdout.strip().split() if pid.strip())
     for pid in pids:
         pid = pid.strip()
         if not pid:
@@ -524,6 +529,54 @@ def _checkpoint_module_name(cp: Path) -> str:
     return f"{LORA_MODEL}-ckpt{cp.name.split('-')[1]}"
 
 
+def _wait_for_free_gpu_memory(min_fraction: float, timeout_s: int = 120) -> None:
+    """
+    Poll nvidia-smi until enough free memory is available for vLLM startup.
+
+    Training sometimes returns before CUDA memory is fully reclaimed. vLLM
+    checks free memory immediately and exits if the requested utilization target
+    is not currently available.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.free,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except Exception as exc:
+            log(f"Could not query GPU memory via nvidia-smi: {exc}", "WARN")
+            return
+
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            return
+
+        try:
+            free_mb, total_mb = [float(part.strip()) for part in lines[0].split(",", 1)]
+        except ValueError:
+            return
+
+        required_mb = total_mb * min_fraction
+        if free_mb >= required_mb:
+            log(f"GPU memory ready for vLLM: {free_mb/1024:.1f} / {total_mb/1024:.1f} GiB free")
+            return
+
+        log(
+            f"Waiting for GPU memory to recover: {free_mb/1024:.1f} / {total_mb/1024:.1f} GiB free "
+            f"(need {required_mb/1024:.1f} GiB for utilization={min_fraction:.2f})"
+        )
+        time.sleep(5)
+
+    log("Timed out waiting for GPU memory recovery; attempting vLLM startup anyway", "WARN")
+
+
 def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | None:
     log_section("STEP 4: Start vLLM inference server")
 
@@ -548,6 +601,8 @@ def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | Non
                 "or set runtime: vllm in config.yaml."
             )
         return None
+
+    _wait_for_free_gpu_memory(cfg.vllm_gpu_memory_util)
 
     lora_modules = [f"{LORA_MODEL}={FINAL_DIR}"]
     if include_checkpoints:
@@ -579,6 +634,7 @@ def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | Non
         text=True,
         bufsize=1,
         env=env,
+        start_new_session=True,
     )
     log(f"vLLM PID: {proc.pid}")
     pid_file = LOGS_DIR / f"vllm_{TIMESTAMP}.pid"
@@ -636,6 +692,28 @@ def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | Non
         time.sleep(5)
 
 
+def stop_managed_vllm(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    log(f"Stopping managed vLLM process group {proc.pid}")
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(1)
+
+    log(f"vLLM process group {proc.pid} still alive — sending SIGKILL", "WARN")
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 # ── Step 5: Evaluate ──────────────────────────────────────────────────────────
 
 def find_latest_eval(model: str) -> Path | None:
@@ -663,7 +741,7 @@ def step_eval(model: str, label: str) -> Path | None:
         "PYTHONUNBUFFERED":  "1",
     }
     wp = WatchdogProcess(
-        cmd=[sys.executable, "-u", str(EVAL_SCRIPT)],
+        cmd=[UNSLOTH_PYTHON, "-u", str(EVAL_SCRIPT)],
         label=f"EVAL:{label}",
         wall_timeout=EVAL_TIMEOUT,
         env=env,
@@ -988,6 +1066,8 @@ def parse_args() -> argparse.Namespace:
                    ))
     p.add_argument("--holdout", metavar="PATH",
                    help="Override holdout file path for eval.")
+    p.add_argument("--keep-server", action="store_true",
+                   help="Leave a vLLM server started by this cycle running after completion.")
     return p.parse_args()
 
 
@@ -1013,7 +1093,7 @@ def main() -> None:
     log(f"Flags: skip_train={args.skip_train} skip_serve={args.skip_serve} "
         f"skip_eval={args.skip_eval} skip_base_eval={args.skip_base_eval} "
         f"canary={args.canary} steps={args.steps} auto_steps={args.auto_steps} "
-        f"no_best_checkpoint={args.no_best_checkpoint}")
+        f"no_best_checkpoint={args.no_best_checkpoint} keep_server={args.keep_server}")
 
     if not args.skip_eval and not HOLDOUT.exists():
         die(f"Holdout file not found: {HOLDOUT}\n  Fix: place your holdout JSONL at that path, or use --holdout.")
@@ -1080,8 +1160,11 @@ def main() -> None:
         log("Interrupted by user", "WARN")
     finally:
         if vllm_proc and vllm_proc.poll() is None:
-            log("Leaving vLLM server running.")
-            log(f"To stop: kill {vllm_proc.pid}  or  pkill -f 'vllm serve'")
+            if args.keep_server:
+                log("Leaving vLLM server running (--keep-server).")
+                log(f"To stop: kill {vllm_proc.pid}  or  pkill -f 'vllm serve'")
+            else:
+                stop_managed_vllm(vllm_proc)
 
     log(f"\nCycle complete in {_elapsed(cycle_start)}. Log: {LOG_PATH}")
 
