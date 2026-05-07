@@ -44,7 +44,6 @@ from unsloth import FastLanguageModel, PatchDPOTrainer
 from unsloth.chat_templates import get_chat_template
 from datasets import Dataset
 from trl import DPOTrainer, DPOConfig
-from transformers import TrainingArguments
 
 PatchDPOTrainer()
 
@@ -99,10 +98,11 @@ model = FastLanguageModel.get_peft_model(
 
 # ── Data preparation ──────────────────────────────────────────────────────────
 
+from prepare_data import SYSTEM_PROMPT as _SFT_PROMPT  # noqa: E402
+
+# Extends the SFT prompt with multi-step call format (the behavior DPO targets)
 SYSTEM_PROMPT = (
-    "You are a VideoAmp API assistant. "
-    "Given a natural language request, respond with the correct API call "
-    "as a JSON object inside a code block. "
+    _SFT_PROMPT + " "
     'For a single call use: {"endpoint": "GET /...", "params": {...}}. '
     "For a two-step call (when an ID must be fetched first) use: "
     '{"steps": [{"endpoint": "GET /...", "params": {}}, '

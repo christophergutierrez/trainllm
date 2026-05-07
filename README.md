@@ -73,6 +73,7 @@ timeouts:
 
 | Variable | Overrides |
 |----------|-----------|
+| `TRAINLLM_CONFIG` | Path to config YAML (default: `config.yaml` in repo root) |
 | `TRAIN_DATA` | `data.train` |
 | `OUTPUT_DIR` | LoRA output directory |
 | `MAX_STEPS` | `training.max_steps` |
@@ -226,20 +227,52 @@ The pipeline is configured for NVIDIA Blackwell (GB10) with 128 GB LPDDR5X:
 
 ```
 trainLLM/
-├── config.yaml          # all configuration
-├── _config.py           # shared config loader (imported by all scripts)
-├── train.py             # QLoRA training via Unsloth
-├── eval.py              # holdout evaluation via vLLM
-├── cycle.py             # orchestrator: backup → train → serve → eval → report
-├── data/                # training and holdout JSONL files
-├── models/hf/           # HuggingFace model cache (HF_HOME)
+├── config.yaml                # all configuration
+├── config.example.yaml        # annotated config template
+├── config.videoamp.yaml       # VideoAmp API fine-tuning config
+├── _config.py                 # shared config loader (imported by all scripts)
+├── cycle.py                   # orchestrator: backup → train → serve → eval → report
+├── train.py                   # QLoRA SFT training via Unsloth
+├── train_dpo.py               # DPO fine-tuning on top of an SFT adapter
+├── eval.py                    # holdout evaluation via vLLM
+├── eval_prompt_baseline.py    # one-off: base model + system prompt eval
+├── llm_judge.py               # LLM-as-judge rescoring (Claude Haiku)
+├── prepare_data.py            # convert apisynth format → ShareGPT + holdout splits
+├── emit_synth_status.py       # emit synth_status.yaml for reposynth handoff
+├── videoamp_endpoint_runner.py # per-endpoint VideoAmp adapter automation
+├── docs/
+│   └── architecture.md        # detailed design notes
+├── data/                      # training and holdout JSONL files
+├── models/hf/                 # HuggingFace model cache (HF_HOME)
 ├── lora/
 │   └── <adapter_name>/
-│       ├── final/       # current trained adapter
-│       └── final-v*/    # timestamped backups
-├── evals/               # eval reports (.md + .json)
-└── logs/                # cycle logs and PID files
+│       ├── final/             # current trained adapter
+│       └── final-v*/          # timestamped backups
+├── evals/                     # eval reports (.md + .json)
+└── logs/                      # cycle logs and PID files
 ```
+
+## Additional scripts
+
+### `train_dpo.py` — DPO fine-tuning
+
+Runs a Direct Preference Optimization pass on top of an existing SFT adapter. Useful for correcting strong priors that SFT alone can't override (e.g., chained multi-step responses when a single call suffices). See the script's docstring for usage and hyperparameter overrides.
+
+### `llm_judge.py` — LLM-as-judge rescoring
+
+Rescores an existing eval JSON using Claude Haiku as a semantic judge. The similarity metric (`difflib.SequenceMatcher`) undercounts correct-but-differently-worded code; the judge metric measures correctness and convention adherence instead. **Note:** the default rubric contains Go/VideoAmp-specific conventions — customize `RUBRIC` for other domains.
+
+### `prepare_data.py` — API training data preparation
+
+Converts apisynth-format endpoint data into ShareGPT (training) and OpenAI messages (holdout) JSONL with stratified per-endpoint splits. VideoAmp API specific.
+
+### `videoamp_endpoint_runner.py` — per-endpoint automation
+
+Discovers endpoint directories, generates per-endpoint configs with auto-sized training parameters, and runs `cycle.py` for each. See `--help` for options.
+
+### `emit_synth_status.py` — reposynth handoff
+
+Emits `synth_status.yaml` from an eval JSON for the reposynth feedback loop. Called automatically by `cycle.py` step 5b. **Note:** the `format_health` section contains Go-specific heuristics — results are meaningless for non-Go outputs.
 
 ## See also
 

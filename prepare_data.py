@@ -81,7 +81,7 @@ def to_holdout(record: dict, endpoint_name: str, idx: int) -> dict:
     if not params:
         conventions.append("no-params")
     # Detect path-param endpoints (endpoint name is singular resource)
-    if any(k not in ("pageSize", "pageToken") and not k.endswith("Id") is False
+    if any(k not in ("pageSize", "pageToken") and not k.endswith("Id")
            for k in params):
         conventions.append("path-param")
 

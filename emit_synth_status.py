@@ -13,19 +13,17 @@ Usage:
 """
 
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _config
+from _eval_utils import THRESHOLDS, strip_fences
 
 import yaml  # type: ignore[import-untyped]
 
 cfg = _config.load()
-
-THRESHOLDS = {"excellent": 0.8, "good": 0.6, "partial": 0.4}
 
 
 def _load_eval(path: Path) -> dict:
@@ -68,18 +66,12 @@ def _action(boost: list, avg: float) -> str:
     return "EVAL"
 
 
-def _strip_fences(text: str) -> str:
-    text = re.sub(r"^```[\w]*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
-    return text.strip()
-
-
 def _format_health(results: list) -> dict:
     scored = [r for r in results if r["band"] != "ERROR"]
     func_starts = 0
     boilerplate_cases = []
     for r in scored:
-        gen = _strip_fences(r.get("generated", ""))
+        gen = strip_fences(r.get("generated", ""))
         if gen.startswith("func "):
             func_starts += 1
         preamble = []
@@ -161,8 +153,8 @@ def _seed_candidates(results: list, boost: list) -> dict:
                 "score":              round(r.get("score", 0.0), 3),
                 "conventions_tested": r.get("conventions_tested", []),
                 "prompt":             r.get("prompt", ""),
-                "expected":           _strip_fences(r.get("expected", "")),
-                "generated":          _strip_fences(r.get("generated", "")),
+                "expected":           strip_fences(r.get("expected", "")),
+                "generated":          strip_fences(r.get("generated", "")),
             }
             for r in matches[:3]
         ]

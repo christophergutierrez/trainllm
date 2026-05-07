@@ -19,15 +19,15 @@ Output:
 
 import json
 import os
-import re
 import sys
 from collections import defaultdict
 from datetime import datetime
-from difflib import SequenceMatcher
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _config
+from _eval_utils import THRESHOLDS, band, similarity, diagnostics
+
 cfg = _config.load()
 
 from openai import OpenAI  # noqa: E402
@@ -40,39 +40,14 @@ EVALS_DIR.mkdir(parents=True, exist_ok=True)
 
 client = OpenAI(base_url=f"{BASE_URL}/v1", api_key="none")
 
-THRESHOLDS = {"excellent": 0.8, "good": 0.6, "partial": 0.4}
-
-
-def band(score: float) -> str:
-    if score >= THRESHOLDS["excellent"]:
-        return "EXCELLENT"
-    if score >= THRESHOLDS["good"]:
-        return "GOOD"
-    if score >= THRESHOLDS["partial"]:
-        return "PARTIAL"
-    return "POOR"
-
-
-def similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.strip(), b.strip()).ratio()
-
-
-def _strip_fences(text: str) -> str:
-    text = re.sub(r"^```[\w]*\n?", "", text.strip())
-    text = re.sub(r"\n?```\s*$", "", text)
-    return text.strip()
-
-
-def _diagnostics(generated: str, expected: str) -> dict:
-    gen = _strip_fences(generated)
-    exp = _strip_fences(expected)
-    return {"length_ratio": round(len(gen) / max(len(exp), 1), 2)}
-
 
 def query(record: dict) -> tuple[str, str, float, dict]:
     messages = [{"role": m["role"], "content": m["content"]}
                 for m in record["messages"] if m["role"] != "assistant"]
-    expected = next(m["content"] for m in record["messages"] if m["role"] == "assistant")
+    expected = next(
+        (m["content"] for m in record["messages"] if m["role"] == "assistant"),
+        "",
+    )
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
@@ -81,7 +56,7 @@ def query(record: dict) -> tuple[str, str, float, dict]:
         seed=42,
     )
     generated = resp.choices[0].message.content or ""
-    diag = _diagnostics(generated, expected)
+    diag = diagnostics(generated, expected)
     return generated, expected, similarity(expected, generated), diag
 
 
@@ -112,7 +87,7 @@ for i, r in enumerate(records):
             "conventions_tested": r.get("conventions_tested", []),
             "score":              round(score, 4),
             "band":               b,
-            "prompt":             next(m["content"] for m in r["messages"] if m["role"] == "user"),
+            "prompt":             next((m["content"] for m in r["messages"] if m["role"] == "user"), ""),
             "expected":           expected,
             "generated":          generated,
             "error":              None,

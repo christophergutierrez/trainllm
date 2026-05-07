@@ -300,37 +300,51 @@ def step_backup() -> None:
 
 # ── Step 2: Stop vLLM ────────────────────────────────────────────────────────
 
+def _find_vllm_pids() -> set[str]:
+    """Find PIDs of vLLM processes bound to our configured port."""
+    port = str(cfg.vllm_port)
+    pids: set[str] = set()
+
+    # First try: saved PID file from a previous step_start_vllm()
+    for pid_file in LOGS_DIR.glob("vllm_*.pid"):
+        saved = pid_file.read_text().strip()
+        if saved:
+            pids.add(saved)
+
+    # Second try: pgrep scoped to our port to avoid killing unrelated servers
+    for pattern in [f"vllm serve.*--port {port}", f"vllm.entrypoints.*--port {port}"]:
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+        pids.update(pid.strip() for pid in result.stdout.strip().split() if pid.strip())
+
+    # Filter out stale PIDs (process no longer exists)
+    alive: set[str] = set()
+    for pid in pids:
+        try:
+            os.kill(int(pid), 0)
+            alive.add(pid)
+        except (ProcessLookupError, ValueError):
+            pass
+    return alive
+
+
 def step_stop_vllm() -> None:
     log_section("STEP 2: Stop any running vLLM server")
     if cfg.runtime == "external":
         log("runtime=external — server is user-managed; skipping stop")
         return
-    patterns = ["vllm serve", "VLLM::EngineCore", "api_server.py"]
-    pids: set[str] = set()
-    for pattern in patterns:
-        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
-        pids.update(pid.strip() for pid in result.stdout.strip().split() if pid.strip())
-    if not pids or not any(p.strip() for p in pids):
+    pids = _find_vllm_pids()
+    if not pids:
         log("No vllm serve process found — nothing to stop")
         return
     for pid in pids:
-        pid = pid.strip()
-        if not pid:
-            continue
         log(f"Sending SIGTERM to vllm serve PID {pid}")
         try:
             os.kill(int(pid), signal.SIGTERM)
         except ProcessLookupError:
             log(f"PID {pid} already gone")
     time.sleep(3)
-    pids = set()
-    for pattern in patterns:
-        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
-        pids.update(pid.strip() for pid in result.stdout.strip().split() if pid.strip())
+    pids = _find_vllm_pids()
     for pid in pids:
-        pid = pid.strip()
-        if not pid:
-            continue
         log(f"Still running — sending SIGKILL to PID {pid}", "WARN")
         try:
             os.kill(int(pid), signal.SIGKILL)

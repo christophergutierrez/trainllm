@@ -4,17 +4,24 @@ This document describes the design of the trainLLM pipeline in detail: how compo
 
 ## Overview
 
-trainLLM is a three-script pipeline glued together by a config file and an orchestrator:
+trainLLM is a config-driven pipeline with three core scripts and several supporting tools:
 
 ```
 config.yaml
     │
-    ├── train.py    ← Unsloth QLoRA fine-tuning
-    ├── eval.py     ← vLLM-based holdout evaluation
-    └── cycle.py    ← orchestrator (backup → train → serve → eval → report)
+    ├── train.py                   ← Unsloth QLoRA SFT fine-tuning
+    ├── eval.py                    ← vLLM-based holdout evaluation
+    ├── cycle.py                   ← orchestrator (backup → train → serve → eval → report)
+    │
+    ├── train_dpo.py               ← DPO fine-tuning on top of SFT adapter
+    ├── llm_judge.py               ← LLM-as-judge rescoring with Claude Haiku
+    ├── prepare_data.py            ← apisynth → ShareGPT/holdout conversion
+    ├── emit_synth_status.py       ← synth_status.yaml for reposynth handoff
+    ├── eval_prompt_baseline.py    ← base model + system prompt eval
+    └── videoamp_endpoint_runner.py ← per-endpoint automation via cycle.py
 ```
 
-`_config.py` is a shared module that loads `config.yaml` and resolves all paths. Every script imports it, so there is a single source of truth for model names, paths, and hyperparameters.
+`_config.py` is a shared module that loads `config.yaml` and resolves all paths. Every script imports it, so there is a single source of truth for model names, paths, and hyperparameters. The `TRAINLLM_CONFIG` env var overrides the config file path.
 
 ---
 
