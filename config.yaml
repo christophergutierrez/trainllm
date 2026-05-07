@@ -1,17 +1,17 @@
-# trainLLM config — VideoAmp API fine-tuning
-# Fine-tunes a model to translate natural language into VideoAmp API calls.
+# trainLLM config — Acme API fine-tuning
+# Fine-tunes a model to translate natural language into Acme API calls.
 #
 # Workflow:
 #   1. git pull                          # get latest trainLLM
-#   2. Copy apisynth/data/videoamp/ here # endpoint training.jsonl files
+#   2. Copy source_data/acme/ here       # endpoint training.jsonl files
 #   3. python prepare_data.py \
-#        --input-dir data/videoamp \
+#        --input-dir data/acme \
 #        --train-out  data/training.jsonl \
 #        --holdout-out data/holdout.jsonl
 #   4. python cycle.py                   # train → eval → report
 
 model: Qwen/Qwen2.5-Coder-1.5B-Instruct   # 1.5B is plenty for slot-filling + JSON; trains/serves much faster than 7B
-adapter_name: videoamp-api
+adapter_name: acme-api
 chat_template: qwen-2.5
 
 paths:

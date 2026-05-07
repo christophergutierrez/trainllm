@@ -125,10 +125,10 @@ def _latest_base_before(base_files: list[Path], current_stem: str) -> Path | Non
     def ts(p: Path) -> str:
         return "_".join(p.stem.split("_")[:2])
     current_ts = "_".join(current_stem.split("_")[:2])
-    same_or_after = [p for p in base_files if ts(p) >= current_ts]
-    if same_or_after:
-        return same_or_after[0]
-    return base_files[-1] if base_files else None
+    before = [p for p in base_files if ts(p) < current_ts]
+    if before:
+        return before[-1]
+    return None
 
 
 def _seed_candidates(results: list, boost: list) -> dict:

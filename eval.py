@@ -64,7 +64,7 @@ def query(record: dict) -> tuple[str, str, float, dict]:
 
 with open(DATA) as fh:
     records = [json.loads(line) for line in fh]
-timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 safe_model = MODEL.replace("/", "_")
 
 print(f"Model:   {MODEL}")

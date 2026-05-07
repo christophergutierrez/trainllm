@@ -730,9 +730,9 @@ def stop_managed_vllm(proc: subprocess.Popen) -> None:
 
 # ── Step 5: Evaluate ──────────────────────────────────────────────────────────
 
-def find_latest_eval(model: str) -> Path | None:
+def find_latest_eval(model: str, after: float = 0) -> Path | None:
     safe = model.replace("/", "_")
-    matches = list(EVALS_DIR.glob(f"*_{safe}.json"))
+    matches = [p for p in EVALS_DIR.glob(f"*_{safe}.json") if p.stat().st_mtime >= after]
     return max(matches, key=lambda p: p.stat().st_mtime) if matches else None
 
 
@@ -748,6 +748,7 @@ def step_eval(model: str, label: str) -> Path | None:
     if not HOLDOUT.exists():
         log(f"Holdout file not found: {HOLDOUT} — skipping eval", "WARN")
         return None
+    started_at = time.time()
     env = {
         "MODEL":             model,
         "HOLDOUT":           str(HOLDOUT),
@@ -768,7 +769,7 @@ def step_eval(model: str, label: str) -> Path | None:
     if rc != 0:
         log(f"Eval exited with code {rc} — results may be incomplete", "WARN")
 
-    result = find_latest_eval(model)
+    result = find_latest_eval(model, after=started_at)
     if result:
         log(f"Eval output: {result}")
     else:

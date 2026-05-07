@@ -11,12 +11,10 @@ logs/*
 !logs/.gitkeep
 lora/*
 !lora/.gitkeep
-config.yaml
 __pycache__/
 evals/*
 handoff
 models/
 archive/
 unsloth*
-config.yaml
 tmp/

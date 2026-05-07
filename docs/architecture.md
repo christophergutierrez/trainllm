@@ -15,10 +15,10 @@ config.yaml
     │
     ├── train_dpo.py               ← DPO fine-tuning on top of SFT adapter
     ├── llm_judge.py               ← LLM-as-judge rescoring with Claude Haiku
-    ├── prepare_data.py            ← apisynth → ShareGPT/holdout conversion
+    ├── prepare_data.py            ← endpoint data → ShareGPT/holdout conversion
     ├── emit_synth_status.py       ← synth_status.yaml for reposynth handoff
     ├── eval_prompt_baseline.py    ← base model + system prompt eval
-    └── videoamp_endpoint_runner.py ← per-endpoint automation via cycle.py
+    └── endpoint_runner.py         ← per-endpoint automation via cycle.py
 ```
 
 `_config.py` is a shared module that loads `config.yaml` and resolves all paths. Every script imports it, so there is a single source of truth for model names, paths, and hyperparameters. The `TRAINLLM_CONFIG` env var overrides the config file path.
@@ -46,7 +46,7 @@ This is robust to being called from any working directory.
 
 ### QLoRA via Unsloth
 
-Training uses [Unsloth](https://github.com/unslothai/unsloth) for memory-efficient QLoRA (Quantized Low-Rank Adaptation). The base model is loaded in 4-bit NF4 quantization, then a small set of trainable LoRA matrices is attached to the attention and MLP projection layers.
+Training uses Unsloth for memory-efficient QLoRA (Quantized Low-Rank Adaptation). The base model is loaded in 4-bit NF4 quantization, then a small set of trainable LoRA matrices is attached to the attention and MLP projection layers.
 
 **Why QLoRA?** A 14B parameter model in full BF16 requires ~28 GB of VRAM just for weights. 4-bit quantization brings this to ~7 GB, leaving room for activations, gradients, and the LoRA adapter pages during training.
 
@@ -207,7 +207,7 @@ The eval strips the `assistant` turn before sending to vLLM, then compares the g
 
 ### Scoring and bands
 
-Similarity is computed after stripping markdown code fences (` ``` `) from both sides, so fence presence or absence does not affect the score.
+The `similarity()` function in `_eval_utils.py` strips markdown code fences (` ``` `) from both sides before comparing, so fence presence or absence does not affect the score.
 
 | Band | Range |
 |------|-------|

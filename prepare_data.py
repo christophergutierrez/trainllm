@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
 """
-Prepare API training data (apisynth format) for trainLLM.
+Prepare API training data for trainLLM.
 
 Reads training.jsonl files from endpoint subdirectories, converts to ShareGPT
 format, applies a system prompt, and produces stratified train/holdout splits.
 
-Input record format (apisynth):
-    {"question": "List 10 programs",
+Input record format:
+    {"question": "List 10 resources",
      "api_call": {"endpoint": "GET /...", "params": {"pageSize": 10}}}
 
 Output record format — training (ShareGPT):
     {"conversations": [
         {"from": "system", "value": "..."},
-        {"from": "human",  "value": "List 10 programs"},
+        {"from": "human",  "value": "List 10 resources"},
         {"from": "gpt",    "value": "```json\n{...}\n```"}
     ]}
 
 Output record format — holdout (OpenAI messages):
-    {"id": "programs-0042",
-     "label": "List 10 programs",
+    {"id": "resources-0042",
+     "label": "List 10 resources",
      "messages": [
          {"role": "system",    "content": "..."},
-         {"role": "user",      "content": "List 10 programs"},
+         {"role": "user",      "content": "List 10 resources"},
          {"role": "assistant", "content": "```json\n{...}\n```"}
      ],
-     "conventions_tested": ["programs", "list-endpoint", "page-size"]}
+     "conventions_tested": ["resources", "list-endpoint", "page-size"]}
 
 Usage:
     python prepare_data.py \\
-        --input-dir ~/git_home/apisynth/data/videoamp \\
+        --input-dir ~/git_home/source_data/acme \\
         --train-out  ~/trainLLM/data/training.jsonl \\
         --holdout-out ~/trainLLM/data/holdout.jsonl
 
@@ -38,17 +38,23 @@ Usage:
 
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
 
-SYSTEM_PROMPT = (
-    "You are a VideoAmp API assistant. "
-    "Given a natural language request, respond with the correct API call "
-    "as a JSON object inside a code block. "
-    "The JSON must have an \"endpoint\" field (e.g. \"GET /v1/audiences\") "
-    "and a \"params\" field containing the query or path parameters."
-)
+DEFAULT_ORG = os.environ.get("TRAINLLM_ORG", "acme")
+
+
+def build_system_prompt(org_name: str) -> str:
+    org_label = org_name.strip() or DEFAULT_ORG
+    return (
+        f"You are an {org_label} API assistant. "
+        "Given a natural language request, respond with the correct API call "
+        "as a JSON object inside a code block. "
+        "The JSON must have an \"endpoint\" field (e.g. \"GET /v1/resources\") "
+        "and a \"params\" field containing the query or path parameters."
+    )
 
 
 def format_response(api_call: dict) -> str:
@@ -56,17 +62,17 @@ def format_response(api_call: dict) -> str:
     return "```json\n" + json.dumps(api_call, indent=2) + "\n```"
 
 
-def to_sharegpt(record: dict) -> dict:
+def to_sharegpt(record: dict, system_prompt: str) -> dict:
     return {
         "conversations": [
-            {"from": "system", "value": SYSTEM_PROMPT},
+            {"from": "system", "value": system_prompt},
             {"from": "human",  "value": record["question"]},
             {"from": "gpt",    "value": format_response(record["api_call"])},
         ]
     }
 
 
-def to_holdout(record: dict, endpoint_name: str, idx: int) -> dict:
+def to_holdout(record: dict, endpoint_name: str, idx: int, system_prompt: str) -> dict:
     response = format_response(record["api_call"])
     params = record["api_call"].get("params", {})
 
@@ -89,7 +95,7 @@ def to_holdout(record: dict, endpoint_name: str, idx: int) -> dict:
         "id": f"{endpoint_name}-{idx:04d}",
         "label": record["question"],
         "messages": [
-            {"role": "system",    "content": SYSTEM_PROMPT},
+            {"role": "system",    "content": system_prompt},
             {"role": "user",      "content": record["question"]},
             {"role": "assistant", "content": response},
         ],
@@ -145,9 +151,12 @@ def main():
                         help="Fraction of each endpoint's records to use as holdout (default: 0.10)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible splits (default: 42)")
+    parser.add_argument("--org-name", default=DEFAULT_ORG,
+                        help=f"Organization label for the generated system prompt (default: {DEFAULT_ORG})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print counts without writing any files")
     args = parser.parse_args()
+    system_prompt = build_system_prompt(args.org_name)
 
     input_dir = Path(args.input_dir).expanduser()
     if not input_dir.is_dir():
@@ -187,7 +196,7 @@ def main():
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w") as f:
             for _, record in train_items:
-                f.write(json.dumps(to_sharegpt(record)) + "\n")
+                f.write(json.dumps(to_sharegpt(record, system_prompt)) + "\n")
         print(f"\n  Training:  {len(train_items)} records → {out}")
 
     if args.holdout_out:
@@ -198,7 +207,7 @@ def main():
             for ep, record in holdout_items:
                 idx = ep_counters.get(ep, 0)
                 ep_counters[ep] = idx + 1
-                f.write(json.dumps(to_holdout(record, ep, idx)) + "\n")
+                f.write(json.dumps(to_holdout(record, ep, idx, system_prompt)) + "\n")
         print(f"  Holdout:   {len(holdout_items)} records → {out}")
 
 

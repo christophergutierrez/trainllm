@@ -28,6 +28,7 @@ from pathlib import Path
 
 MODEL = os.environ.get("JUDGE_MODEL", "claude-haiku-4-5-20251001")
 USE_SDK = bool(os.environ.get("ANTHROPIC_API_KEY"))
+CODEBASE_NAME = os.environ.get("JUDGE_CODEBASE", "acme")
 
 if USE_SDK:
     from anthropic import Anthropic
@@ -48,12 +49,12 @@ Scoring guide:
   that a code reviewer would ask to fix, but the function would work.
 - 0.6: Correct logic, multiple convention deviations. Would need rework.
 - 0.4: Partially correct logic, or correct but using wrong libraries /
-  patterns for this codebase (e.g. generic Go instead of VA-specific
+  patterns for this codebase (e.g. generic Go instead of {codebase_name}-specific
   idioms like Bearer _%s, ErrRead.Join, sqlfunc.Paging).
 - 0.2: Attempts the right thing but has significant logic errors.
 - 0.0: Wrong function or unrelated output.
 
-IMPORTANT: The VA-specific conventions you should check for:
+IMPORTANT: The {codebase_name}-specific conventions you should check for:
 - Error wrap: fmt.Errorf("[FunctionName]: %w", err), never bare err
 - Sentinel errors: ErrRead.Join(err), &NotFoundError{}, ErrInsertX.Join(err)
 - HTTP auth: "Bearer _%s" (underscore mandatory between Bearer and key)
@@ -69,7 +70,7 @@ IMPORTANT: The VA-specific conventions you should check for:
 
 Output format: a single JSON object on one line, no other text.
 Schema: {"score": <float>, "reason": "<≤30 word explanation>"}
-"""
+""".format(codebase_name=CODEBASE_NAME)
 
 
 def _build_user_prompt(prompt: str, expected: str, generated: str) -> str:

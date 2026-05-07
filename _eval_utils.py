@@ -17,7 +17,7 @@ def band(score: float) -> str:
 
 
 def similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.strip(), b.strip()).ratio()
+    return SequenceMatcher(None, strip_fences(a), strip_fences(b)).ratio()
 
 
 def strip_fences(text: str) -> str:

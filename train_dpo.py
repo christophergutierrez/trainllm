@@ -10,10 +10,10 @@ Typical use: kill a strong chaining prior that SFT alone can't override.
 
 Usage:
     # Train on a single endpoint's DPO pairs
-    DPO_DATA=~/tmp/videoamp/measurements/dpo.jsonl python train_dpo.py
+    DPO_DATA=~/tmp/acme/measurements/dpo.jsonl python train_dpo.py
 
     # With a custom config
-    TRAINLLM_CONFIG=config.videoamp.yaml DPO_DATA=.../dpo.jsonl python train_dpo.py
+    TRAINLLM_CONFIG=config.acme.yaml DPO_DATA=.../dpo.jsonl python train_dpo.py
 
     # Override hyperparams
     DPO_BETA=0.2 DPO_MAX_STEPS=80 DPO_LR=3e-5 DPO_DATA=.../dpo.jsonl python train_dpo.py
@@ -98,11 +98,12 @@ model = FastLanguageModel.get_peft_model(
 
 # ── Data preparation ──────────────────────────────────────────────────────────
 
-from prepare_data import SYSTEM_PROMPT as _SFT_PROMPT  # noqa: E402
+from prepare_data import DEFAULT_ORG, build_system_prompt  # noqa: E402
 
 # Extends the SFT prompt with multi-step call format (the behavior DPO targets)
+ORG_NAME = os.environ.get("TRAINLLM_ORG", DEFAULT_ORG)
 SYSTEM_PROMPT = (
-    _SFT_PROMPT + " "
+    build_system_prompt(ORG_NAME) + " "
     'For a single call use: {"endpoint": "GET /...", "params": {...}}. '
     "For a two-step call (when an ID must be fetched first) use: "
     '{"steps": [{"endpoint": "GET /...", "params": {}}, '

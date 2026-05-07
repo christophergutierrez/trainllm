@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prepare, train, and evaluate per-endpoint VideoAmp adapters.
+Prepare, train, and evaluate per-endpoint adapters.
 
 This script keeps synced API data in durable local storage under data/, writes
 prepared train/holdout files per endpoint, generates endpoint-specific config
@@ -22,16 +22,20 @@ import yaml
 import _config
 from prepare_data import load_endpoint, stratified_split, to_holdout, to_sharegpt
 
+DEFAULT_DATASET = os.environ.get("TRAINLLM_DATASET", "acme")
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--source-root", default="handoff/data/videoamp",
+    p.add_argument("--dataset", default=DEFAULT_DATASET,
+                   help=f"Dataset/domain label used for paths and adapter names (default: {DEFAULT_DATASET})")
+    p.add_argument("--source-root", default=None,
                    help="Ephemeral synced endpoint root")
-    p.add_argument("--durable-root", default="data/videoamp",
+    p.add_argument("--durable-root", default=None,
                    help="Durable ignored storage for endpoint source files")
-    p.add_argument("--prepared-root", default="data/videoamp_prepared",
+    p.add_argument("--prepared-root", default=None,
                    help="Prepared train/holdout output root")
-    p.add_argument("--config-root", default="data/videoamp_runs",
+    p.add_argument("--config-root", default=None,
                    help="Generated config output root")
     p.add_argument("--endpoint", action="append", default=[],
                    help="Endpoint to run. Repeat to select multiple. Default: all")
@@ -43,7 +47,7 @@ def parse_args() -> argparse.Namespace:
                    help="Base model for all endpoint adapters")
     p.add_argument("--prepare-only", action="store_true",
                    help="Only sync and prepare data/configs; do not train")
-    p.add_argument("--skip-base-eval", action="store_true", default=True,
+    p.add_argument("--skip-base-eval", action=argparse.BooleanOptionalAction, default=True,
                    help="Skip base-model eval during cycle runs (default: true)")
     p.add_argument("--keep-best-checkpoint", action="store_true",
                    help="Enable cycle.py best-checkpoint selection")
@@ -113,6 +117,7 @@ def prepare_endpoint_files(
     endpoint: str,
     holdout_frac: float,
     seed: int,
+    org_name: str,
 ) -> tuple[Path, Path, int, int]:
     ep_name, records = load_endpoint(endpoint_file)
     train_items, holdout_items = stratified_split({ep_name: records}, holdout_frac, seed)
@@ -124,11 +129,11 @@ def prepare_endpoint_files(
 
     with train_path.open("w") as f:
         for _, record in train_items:
-            f.write(json.dumps(to_sharegpt(record)) + "\n")
+            f.write(json.dumps(to_sharegpt(record, org_name)) + "\n")
 
     with holdout_path.open("w") as f:
         for idx, (_, record) in enumerate(holdout_items):
-            f.write(json.dumps(to_holdout(record, endpoint, idx)) + "\n")
+            f.write(json.dumps(to_holdout(record, endpoint, idx, org_name)) + "\n")
 
     return train_path, holdout_path, len(train_items), len(holdout_items)
 
@@ -136,6 +141,7 @@ def prepare_endpoint_files(
 def write_config(
     repo_root: Path,
     cfg_root: Path,
+    dataset: str,
     endpoint: str,
     model: str,
     train_path: Path,
@@ -145,7 +151,7 @@ def write_config(
     current = _config.load()
     config = {
         "model": model,
-        "adapter_name": f"videoamp-api-{endpoint}",
+        "adapter_name": f"{dataset}-api-{endpoint}",
         "chat_template": "qwen-2.5",
         "runtime": "vllm",
         "paths": {
@@ -192,10 +198,11 @@ def run_cycle(repo_root: Path, config_path: Path, max_steps: int, skip_base_eval
 def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent
-    source_root = (repo_root / args.source_root).resolve()
-    durable_root = repo_root / args.durable_root
-    prepared_root = repo_root / args.prepared_root
-    config_root = repo_root / args.config_root
+    dataset = args.dataset.strip() or DEFAULT_DATASET
+    source_root = (repo_root / (args.source_root or f"handoff/data/{dataset}")).resolve()
+    durable_root = repo_root / (args.durable_root or f"data/{dataset}")
+    prepared_root = repo_root / (args.prepared_root or f"data/{dataset}_prepared")
+    config_root = repo_root / (args.config_root or f"data/{dataset}_runs")
 
     endpoints = args.endpoint or discover_endpoints(source_root)
     if not endpoints:
@@ -206,11 +213,15 @@ def main() -> int:
         print(f"\n=== {endpoint} ===", flush=True)
         synced = sync_endpoint(source_root, durable_root, endpoint)
         train_path, holdout_path, n_train, n_holdout = prepare_endpoint_files(
-            synced, prepared_root, endpoint, args.holdout_frac, args.seed,
+            synced, prepared_root, endpoint, args.holdout_frac, args.seed, dataset,
         )
+        if n_train == 0:
+            print(f"  0 training examples after split — skipping {endpoint}", flush=True)
+            continue
+
         training, max_steps = choose_training_params(n_train)
         config_path = write_config(
-            repo_root, config_root, endpoint, args.model, train_path, holdout_path, training,
+            repo_root, config_root, dataset, endpoint, args.model, train_path, holdout_path, training,
         )
 
         print(

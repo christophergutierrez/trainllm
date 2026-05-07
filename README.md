@@ -17,8 +17,8 @@ This runs: backup → train → serve (vLLM) → eval (fine-tuned + base) → re
 ## Requirements
 
 - Python 3.11+
-- [Unsloth Studio](https://github.com/unslothai/unsloth) installed at `paths.unsloth_python`
-- [vLLM](https://github.com/vllm-project/vllm) available on `PATH`
+- Unsloth Studio installed at `paths.unsloth_python`
+- vLLM available on `PATH`
 - PyYAML: `pip install pyyaml`
 - `openai` Python package (used to talk to the vLLM OpenAI-compatible API): `pip install openai`
 - NVIDIA GPU (pipeline is tuned for Blackwell/GB10; see [Hardware notes](#hardware-notes))
@@ -89,12 +89,13 @@ Unsloth requires ShareGPT format. Each line is a JSON object:
 
 ```json
 {"conversations": [
-  {"from": "human", "value": "Write a function that ..."},
-  {"from": "gpt",   "value": "def my_function(): ..."}
+  {"from": "system", "value": "You are an API assistant ..."},
+  {"from": "human",  "value": "Write a function that ..."},
+  {"from": "gpt",    "value": "def my_function(): ..."}
 ]}
 ```
 
-Additional fields are ignored. `cycle.py` validates the format before training starts.
+The system turn is optional but `prepare_data.py` emits one by default. Additional fields are ignored. `cycle.py` validates the format before training starts.
 
 ### Holdout data (eval JSONL)
 
@@ -229,7 +230,7 @@ The pipeline is configured for NVIDIA Blackwell (GB10) with 128 GB LPDDR5X:
 trainLLM/
 ├── config.yaml                # all configuration
 ├── config.example.yaml        # annotated config template
-├── config.videoamp.yaml       # VideoAmp API fine-tuning config
+├── config.acme.yaml           # Acme API fine-tuning config
 ├── _config.py                 # shared config loader (imported by all scripts)
 ├── cycle.py                   # orchestrator: backup → train → serve → eval → report
 ├── train.py                   # QLoRA SFT training via Unsloth
@@ -237,9 +238,9 @@ trainLLM/
 ├── eval.py                    # holdout evaluation via vLLM
 ├── eval_prompt_baseline.py    # one-off: base model + system prompt eval
 ├── llm_judge.py               # LLM-as-judge rescoring (Claude Haiku)
-├── prepare_data.py            # convert apisynth format → ShareGPT + holdout splits
+├── prepare_data.py            # convert endpoint data → ShareGPT + holdout splits
 ├── emit_synth_status.py       # emit synth_status.yaml for reposynth handoff
-├── videoamp_endpoint_runner.py # per-endpoint VideoAmp adapter automation
+├── endpoint_runner.py         # per-endpoint adapter automation
 ├── docs/
 │   └── architecture.md        # detailed design notes
 ├── data/                      # training and holdout JSONL files
@@ -260,13 +261,13 @@ Runs a Direct Preference Optimization pass on top of an existing SFT adapter. Us
 
 ### `llm_judge.py` — LLM-as-judge rescoring
 
-Rescores an existing eval JSON using Claude Haiku as a semantic judge. The similarity metric (`difflib.SequenceMatcher`) undercounts correct-but-differently-worded code; the judge metric measures correctness and convention adherence instead. **Note:** the default rubric contains Go/VideoAmp-specific conventions — customize `RUBRIC` for other domains.
+Rescores an existing eval JSON using Claude Haiku as a semantic judge. The similarity metric (`difflib.SequenceMatcher`) undercounts correct-but-differently-worded code; the judge metric measures correctness and convention adherence instead. **Note:** the default rubric contains Go/codebase-specific conventions — customize `RUBRIC` or `JUDGE_CODEBASE` for other domains.
 
 ### `prepare_data.py` — API training data preparation
 
-Converts apisynth-format endpoint data into ShareGPT (training) and OpenAI messages (holdout) JSONL with stratified per-endpoint splits. VideoAmp API specific.
+Converts endpoint data into ShareGPT (training) and OpenAI messages (holdout) JSONL with stratified per-endpoint splits. The generated system prompt is parameterized via `--org-name` and defaults to `acme`.
 
-### `videoamp_endpoint_runner.py` — per-endpoint automation
+### `endpoint_runner.py` — per-endpoint automation
 
 Discovers endpoint directories, generates per-endpoint configs with auto-sized training parameters, and runs `cycle.py` for each. See `--help` for options.
 
