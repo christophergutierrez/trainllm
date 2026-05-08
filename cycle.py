@@ -522,7 +522,75 @@ def step_train(max_steps: int | None = None, auto_steps: bool = False) -> None:
         total_mb = sum(f.stat().st_size for f in safetensors) / 1_048_576
         log(f"Adapter saved: {len(safetensors)} shard(s), {total_mb:.1f} MB — {FINAL_DIR}")
 
+    _emit_result_json(loss_points=loss_points, max_steps=max_steps)
     log("Training complete.")
+
+
+# ── Result artifact ──────────────────────────────────────────────────────────
+
+def _emit_result_json(
+    *,
+    loss_points: list[tuple[float, float]] | None = None,
+    max_steps: int | None = None,
+    eval_avg_score: float | None = None,
+    merged_path: Path | None = None,
+    merge_density: float | None = None,
+    merge_adapters: list[str] | None = None,
+) -> Path:
+    """Write result.json — the artifact contract between trainLLM and consumers."""
+    if merged_path:
+        out_path = merged_path / "result.json"
+        fmt = "merged-full"
+    else:
+        out_path = FINAL_DIR / "result.json"
+        fmt = "peft-lora"
+
+    existing: dict = {}
+    if out_path.exists():
+        try:
+            existing = json.loads(out_path.read_text())
+        except Exception:
+            pass
+
+    result = {
+        "adapter_name": LORA_MODEL,
+        "base_model": BASE_MODEL,
+        "adapter_path": str(merged_path if merged_path else FINAL_DIR),
+        "format": fmt,
+        "timestamp": datetime.now().isoformat() + "Z",
+    }
+
+    if fmt == "peft-lora":
+        result["lora_rank"] = cfg.training.lora_rank
+        result["lora_alpha"] = cfg.training.lora_alpha
+        result["max_seq_length"] = cfg.training.max_seq_length
+
+    if loss_points:
+        result["final_loss"] = loss_points[-1][1]
+    elif "final_loss" in existing:
+        result["final_loss"] = existing["final_loss"]
+
+    if max_steps is not None:
+        result["training_steps"] = max_steps
+    elif "training_steps" in existing:
+        result["training_steps"] = existing["training_steps"]
+
+    if eval_avg_score is not None:
+        result["eval_avg_score"] = eval_avg_score
+    elif "eval_avg_score" in existing:
+        result["eval_avg_score"] = existing["eval_avg_score"]
+
+    if fmt == "merged-full":
+        result["merge_config"] = {
+            "method": "dare_ties",
+            "density": merge_density,
+            "source_adapters": merge_adapters or [],
+        }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, indent=2) + "\n")
+    log(f"result.json: {out_path}")
+    return out_path
 
 
 # ── Step 4: Start vLLM ────────────────────────────────────────────────────────
@@ -1274,6 +1342,16 @@ def main() -> None:
             )
             log(f"Merge step completed in {_elapsed(t0)}")
 
+            merge_adapter_names = (
+                [a.strip() for a in args.merge_adapters.split(",")]
+                if args.merge_adapters else None
+            )
+            _emit_result_json(
+                merged_path=merged_path,
+                merge_density=args.merge_density,
+                merge_adapters=merge_adapter_names,
+            )
+
             merged_model_name = f"{LORA_MODEL}-merged"
 
             if not args.skip_serve:
@@ -1289,6 +1367,16 @@ def main() -> None:
                 t0 = time.time()
                 ft_path = step_eval(merged_model_name, "merged-model")
                 log(f"Merged model eval completed in {_elapsed(t0)}")
+
+                if ft_path:
+                    ft_data = _load_eval(ft_path)
+                    if ft_data:
+                        _emit_result_json(
+                            eval_avg_score=ft_data["summary"]["avg_score"],
+                            merged_path=merged_path,
+                            merge_density=args.merge_density,
+                            merge_adapters=merge_adapter_names,
+                        )
 
                 if not args.skip_base_eval:
                     t0 = time.time()
@@ -1322,6 +1410,11 @@ def main() -> None:
                     ft_path = step_eval(LORA_MODEL, "fine-tuned")
                 log(f"Fine-tuned eval completed in {_elapsed(t0)}")
 
+                if ft_path:
+                    ft_data = _load_eval(ft_path)
+                    if ft_data:
+                        _emit_result_json(eval_avg_score=ft_data["summary"]["avg_score"])
+
                 if not args.skip_base_eval:
                     t0 = time.time()
                     base_path = step_eval(BASE_MODEL, "base-model")
@@ -1342,6 +1435,13 @@ def main() -> None:
                 log(f"To stop: kill {vllm_proc.pid}  or  pkill -f 'vllm serve'")
             else:
                 stop_managed_vllm(vllm_proc)
+
+    result_json = (FINAL_DIR / "result.json")
+    if do_merge:
+        merge_out = cfg.merge.output_dir if cfg.merge else (cfg.base_dir / "merged" / "default")
+        result_json = merge_out / "result.json"
+    if result_json.exists():
+        log(f"Result artifact: {result_json}")
 
     log(f"\nCycle complete in {_elapsed(cycle_start)}. Log: {LOG_PATH}")
 

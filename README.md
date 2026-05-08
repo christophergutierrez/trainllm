@@ -198,11 +198,35 @@ MODEL=Qwen/Qwen2.5-Coder-14B-Instruct python ~/trainLLM/eval.py
 | Path | Contents |
 |------|----------|
 | `lora/<adapter_name>/final/` | Trained LoRA adapter (safetensors + tokenizer) |
+| `lora/<adapter_name>/final/result.json` | Artifact contract for downstream consumers (see below) |
 | `lora/<adapter_name>/final-v<date>/` | Backup of previous adapter before each run |
+| `merged/<name>/result.json` | Artifact contract for merged models |
 | `evals/<timestamp>_<model>.md` | Human-readable eval report |
 | `evals/<timestamp>_<model>.json` | Raw eval data for programmatic use |
 | `evals/<timestamp>_<model>_synth_status.yaml` | Handoff status for reposynth (emitted by step 5b) |
 | `logs/cycle_<timestamp>.log` | Full cycle log |
+
+### `result.json` (artifact contract)
+
+`cycle.py` emits a `result.json` alongside the trained adapter. This is the interface file that downstream systems (e.g., model-control-plane's `import_adapter.py`) read to import an adapter into a serving registry.
+
+```json
+{
+  "adapter_name": "my-adapter",
+  "base_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  "adapter_path": "/home/user/trainLLM/lora/my-adapter/final",
+  "format": "peft-lora",
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "max_seq_length": 2048,
+  "eval_avg_score": 0.72,
+  "training_steps": 800,
+  "final_loss": 0.45,
+  "timestamp": "2026-05-07T10:30:00Z"
+}
+```
+
+For merged models, `format` is `"merged-full"` and includes a `merge_config` block. trainLLM is not aware of the registry or serving infrastructure — it only emits this file.
 
 ## Interpreting results
 
@@ -237,6 +261,9 @@ trainLLM/
 ├── train_dpo.py               # DPO fine-tuning on top of an SFT adapter
 ├── eval.py                    # holdout evaluation via vLLM
 ├── eval_prompt_baseline.py    # one-off: base model + system prompt eval
+├── merge.py                   # DARE-TIES model merging via mergekit
+├── archive.py                 # archive adapter weights as versioned tarballs
+├── clean_weights.py           # remove weights after archiving
 ├── llm_judge.py               # LLM-as-judge rescoring (Claude Haiku)
 ├── prepare_data.py            # convert endpoint data → ShareGPT + holdout splits
 ├── emit_synth_status.py       # emit synth_status.yaml for reposynth handoff
@@ -249,9 +276,125 @@ trainLLM/
 │   └── <adapter_name>/
 │       ├── final/             # current trained adapter
 │       └── final-v*/          # timestamped backups
+├── merged/                    # DARE-TIES merged full models
+├── archive/                   # versioned tarball backups (.tar.gz)
 ├── evals/                     # eval reports (.md + .json)
 └── logs/                      # cycle logs and PID files
 ```
+
+## Model merging (DARE-TIES)
+
+Adapters can be merged into a single full model via DARE-TIES, eliminating LoRA adapter swaps at inference time. This is useful when multi-step API calls chain through multiple endpoints — a merged model shares its KV cache across steps, making chained calls sublinear.
+
+### Config
+
+Add an optional `merge:` block to `config.yaml`:
+
+```yaml
+merge:
+  method: dare_ties
+  density: 0.9          # fraction of task vector parameters retained (0.9 = keep 90%)
+  weight: 1.0           # default per-model weight
+  normalize: true
+  output_dir: ~/git_home/trainLLM/merged/my-merge
+  adapters:             # which adapters to merge (or "all")
+    - name: videoamp-api-audiences
+      weight: 1.0
+    - name: videoamp-api-audience
+      weight: 1.0
+```
+
+### Standalone merge
+
+```bash
+# Merge specific adapters (no config change needed):
+python3 merge.py --adapters videoamp-api-measurements,videoamp-api-measurement --density 0.9
+
+# Dry run — print mergekit config without running:
+python3 merge.py --adapters videoamp-api-measurements,videoamp-api-measurement --dry-run
+
+# Merge and clean up intermediate unloaded models:
+python3 merge.py --adapters videoamp-api-audiences,videoamp-api-audience --density 0.9 --clean
+```
+
+### Merge via cycle.py
+
+```bash
+# Train, then merge, then eval the merged model:
+python3 cycle.py --merge --merge-adapters videoamp-api-audiences,videoamp-api-audience
+
+# Merge and eval only (skip training):
+python3 cycle.py --merge-only --merge-adapters videoamp-api-audiences,videoamp-api-audience
+
+# Override density:
+python3 cycle.py --merge-only --merge-density 0.95
+```
+
+### Serving a merged model
+
+A merged model is a full HuggingFace model (not a LoRA adapter). Serve it directly:
+
+```bash
+vllm serve ~/git_home/trainLLM/merged/default --dtype bfloat16 --enforce-eager --port 8000 \
+  --served-model-name my-merged
+```
+
+### Density tuning
+
+`density` controls how aggressively DARE prunes each adapter's task vector:
+
+| Density | Effect |
+|---------|--------|
+| 0.95 | Conservative — keeps almost everything, minimal quality loss |
+| 0.9 | Recommended default for LoRA-based merges |
+| 0.5 | Aggressive — works for models with diverse capabilities, too destructive for similar LoRA adapters |
+
+LoRA adapters with low rank (e.g., 16) have sparse task vectors — aggressive pruning destroys signal. Start at 0.9 and tune down only if the merge produces a model that's too large or if the adapters are highly diverse.
+
+### When to merge vs. combined training
+
+DARE-TIES is most useful when merging models with **different capabilities** (e.g., code generation + math reasoning). For multiple adapters doing the **same task** on different data (like your API endpoints), training a single adapter on combined data often produces better results with no quality tradeoff.
+
+## Archiving and cleanup
+
+Before major changes (swapping the base model, pruning old experiments), archive adapter weights as versioned tarballs.
+
+### Archive weights
+
+```bash
+# Archive all adapters with a descriptive tag:
+python3 archive.py --tag pre-nemotron --include-merged
+
+# Archive specific adapters only:
+python3 archive.py --adapters my-adapter,videoamp-api-audiences
+
+# List existing archives:
+python3 archive.py --list
+```
+
+Archives are saved to `archive/` (gitignored) as compressed tarballs named `<base_model>_<tag>_<timestamp>.tar.gz`. Each tarball includes:
+- Adapter weights (final/ and versioned backups)
+- Training configs that produced each adapter
+- Most recent eval scores and reports
+- A `manifest.json` with base model, git commit, data stats, and per-adapter metadata
+
+Inspect an archive without extracting:
+
+```bash
+tar xzf archive/<name>.tar.gz manifest.json -O | python3 -m json.tool
+```
+
+### Clean up after archiving
+
+```bash
+# Dry run — show what would be removed:
+python3 clean_weights.py
+
+# Actually remove (only works if an archive exists):
+python3 clean_weights.py --confirm
+```
+
+`clean_weights.py` verifies every adapter is present in the latest archive before deleting anything. It also cleans up loose directories in `archive/` and intermediate merged model artifacts.
 
 ## Additional scripts
 
