@@ -16,5 +16,6 @@ evals/*
 handoff
 models/
 archive/
+merged/
 unsloth*
 tmp/

@@ -728,6 +728,120 @@ def stop_managed_vllm(proc: subprocess.Popen) -> None:
         pass
 
 
+# ── Step 4b: Merge + serve merged model ──────────────────────────────────────
+
+MERGE_SCRIPT = Path(__file__).parent / "merge.py"
+
+
+def step_merge(density: float | None = None, adapters: str | None = None) -> Path:
+    """Run DARE-TIES merge of trained adapters into a single model."""
+    log_section("STEP 4b: DARE-TIES merge")
+
+    cmd = [UNSLOTH_PYTHON, "-u", str(MERGE_SCRIPT)]
+    if density is not None:
+        cmd.extend(["--density", str(density)])
+    if adapters:
+        cmd.extend(["--adapters", adapters])
+
+    env = {
+        "PYTHONUNBUFFERED": "1",
+        "HF_HOME": HF_HOME,
+    }
+    wp = WatchdogProcess(
+        cmd=cmd,
+        label="MERGE",
+        silence_timeout=TRAIN_SILENCE_TIMEOUT,
+        env=env,
+    )
+    rc = wp.run()
+    if rc != 0:
+        die("DARE-TIES merge failed")
+
+    output_dir = cfg.merge.output_dir if cfg.merge else (cfg.base_dir / "merged" / "default")
+    if not output_dir.exists():
+        die(f"Merge completed but output directory not found: {output_dir}")
+    log(f"Merged model saved to: {output_dir}")
+    return output_dir
+
+
+def step_start_vllm_merged(model_path: Path) -> subprocess.Popen | None:
+    """Start vLLM serving a merged full model (no LoRA modules)."""
+    log_section("STEP 4b: Start vLLM with merged model")
+
+    if cfg.runtime == "external":
+        log(f"runtime=external — expecting server at {VLLM_URL} with merged model loaded")
+        return None
+
+    _wait_for_free_gpu_memory(cfg.vllm_gpu_memory_util)
+
+    served_name = f"{LORA_MODEL}-merged"
+    cmd = [
+        "vllm", "serve", str(model_path),
+        "--dtype", "bfloat16",
+        "--gpu-memory-utilization", str(cfg.vllm_gpu_memory_util),
+        "--enforce-eager",
+        "--port", str(cfg.vllm_port),
+        "--served-model-name", served_name,
+    ]
+    env = {**os.environ, "HF_HOME": HF_HOME}
+
+    log(f"$ {shlex.join(cmd)}")
+    log(f"Serving merged model as: {served_name}")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+        start_new_session=True,
+    )
+    log(f"vLLM PID: {proc.pid}")
+    pid_file = LOGS_DIR / f"vllm_{TIMESTAMP}.pid"
+    pid_file.write_text(str(proc.pid))
+
+    failed_event = threading.Event()
+
+    def stream_logs():
+        for line in proc.stdout:
+            log(f"  {line.rstrip()}", "VLLM")
+            if proc.poll() is not None:
+                failed_event.set()
+                break
+
+    threading.Thread(target=stream_logs, daemon=True).start()
+
+    start = time.time()
+    last_poll = 0.0
+
+    while True:
+        elapsed = time.time() - start
+        if elapsed > VLLM_STARTUP_TIMEOUT:
+            proc.kill()
+            pid_file.unlink(missing_ok=True)
+            die("vLLM startup timeout (merged model)")
+
+        if failed_event.is_set() or proc.poll() is not None:
+            pid_file.unlink(missing_ok=True)
+            die("vLLM exited during startup (merged model)")
+
+        if time.time() - last_poll >= VLLM_POLL_INTERVAL:
+            last_poll = time.time()
+            log(f"  Polling {VLLM_URL}/v1/models ... (elapsed {int(elapsed)}s)")
+            try:
+                with urllib.request.urlopen(f"{VLLM_URL}/v1/models", timeout=5) as resp:
+                    data = json.loads(resp.read())
+                    model_ids = [m["id"] for m in data.get("data", [])]
+                    log(f"  Server ready! Models: {model_ids}")
+                    pid_file.unlink(missing_ok=True)
+                    return proc
+            except Exception:
+                pass
+
+        time.sleep(5)
+
+
 # ── Step 5: Evaluate ──────────────────────────────────────────────────────────
 
 def find_latest_eval(model: str, after: float = 0) -> Path | None:
@@ -1083,6 +1197,14 @@ def parse_args() -> argparse.Namespace:
                    help="Override holdout file path for eval.")
     p.add_argument("--keep-server", action="store_true",
                    help="Leave a vLLM server started by this cycle running after completion.")
+    p.add_argument("--merge", action="store_true",
+                   help="After training, run DARE-TIES merge and evaluate the merged model.")
+    p.add_argument("--merge-only", action="store_true",
+                   help="Skip training; merge existing adapters and evaluate the merged model.")
+    p.add_argument("--merge-density", type=float, default=None,
+                   help="Override DARE density parameter (0.0-1.0).")
+    p.add_argument("--merge-adapters", default=None,
+                   help="Comma-separated adapter names to merge (overrides config).")
     return p.parse_args()
 
 
@@ -1108,7 +1230,8 @@ def main() -> None:
     log(f"Flags: skip_train={args.skip_train} skip_serve={args.skip_serve} "
         f"skip_eval={args.skip_eval} skip_base_eval={args.skip_base_eval} "
         f"canary={args.canary} steps={args.steps} auto_steps={args.auto_steps} "
-        f"no_best_checkpoint={args.no_best_checkpoint} keep_server={args.keep_server}")
+        f"no_best_checkpoint={args.no_best_checkpoint} keep_server={args.keep_server} "
+        f"merge={args.merge} merge_only={args.merge_only}")
 
     if not args.skip_eval and not HOLDOUT.exists():
         die(f"Holdout file not found: {HOLDOUT}\n  Fix: place your holdout JSONL at that path, or use --holdout.")
@@ -1116,18 +1239,20 @@ def main() -> None:
     vllm_proc   = None
     cycle_start = time.time()
 
+    do_merge = args.merge or args.merge_only
+
     try:
-        if not args.skip_train:
+        if not args.skip_train and not args.merge_only:
             t0 = time.time()
             step_backup()
             log(f"Backup step completed in {_elapsed(t0)}")
 
-        if not args.skip_train:
+        if not args.skip_train and not args.merge_only:
             t0 = time.time()
             step_stop_vllm()
             log(f"Stop vLLM step completed in {_elapsed(t0)}")
 
-        if not args.skip_train:
+        if not args.skip_train and not args.merge_only:
             max_steps_override: int | None = None
             if args.canary:
                 max_steps_override = 300
@@ -1139,37 +1264,74 @@ def main() -> None:
                        auto_steps=args.auto_steps and not args.canary)
             log(f"Training step completed in {_elapsed(t0)}")
 
-        do_best_checkpoint = not args.no_best_checkpoint and not args.skip_train
-
-        if not args.skip_serve:
+        if do_merge:
+            # ── Merge path: merge adapters → serve merged model → eval ──
             t0 = time.time()
-            vllm_proc = step_start_vllm(include_checkpoints=do_best_checkpoint)
-            log(f"vLLM startup completed in {_elapsed(t0)}")
-        else:
-            log("Skipping vLLM start (--skip-serve) — assuming server is already running")
+            step_stop_vllm()
+            merged_path = step_merge(
+                density=args.merge_density,
+                adapters=args.merge_adapters,
+            )
+            log(f"Merge step completed in {_elapsed(t0)}")
 
-        ft_path     = None
-        base_path   = None
-        status_path = None
+            merged_model_name = f"{LORA_MODEL}-merged"
 
-        if not args.skip_eval:
-            t0 = time.time()
-            if do_best_checkpoint:
-                ft_path = step_select_best_checkpoint()
-            else:
-                ft_path = step_eval(LORA_MODEL, "fine-tuned")
-            log(f"Fine-tuned eval completed in {_elapsed(t0)}")
-
-            if not args.skip_base_eval:
+            if not args.skip_serve:
                 t0 = time.time()
-                base_path = step_eval(BASE_MODEL, "base-model")
-                log(f"Base eval completed in {_elapsed(t0)}")
+                vllm_proc = step_start_vllm_merged(merged_path)
+                log(f"vLLM startup (merged) completed in {_elapsed(t0)}")
+
+            ft_path     = None
+            base_path   = None
+            status_path = None
+
+            if not args.skip_eval:
+                t0 = time.time()
+                ft_path = step_eval(merged_model_name, "merged-model")
+                log(f"Merged model eval completed in {_elapsed(t0)}")
+
+                if not args.skip_base_eval:
+                    t0 = time.time()
+                    base_path = step_eval(BASE_MODEL, "base-model")
+                    log(f"Base eval completed in {_elapsed(t0)}")
+
+                status_path = step_emit_synth_status(ft_path)
+
+            step_report(ft_path, base_path, status_path)
+
+        else:
+            # ── Standard multi-LoRA path (unchanged) ──
+            do_best_checkpoint = not args.no_best_checkpoint and not args.skip_train
+
+            if not args.skip_serve:
+                t0 = time.time()
+                vllm_proc = step_start_vllm(include_checkpoints=do_best_checkpoint)
+                log(f"vLLM startup completed in {_elapsed(t0)}")
             else:
-                log("Skipping base model eval (--skip-base-eval)")
+                log("Skipping vLLM start (--skip-serve) — assuming server is already running")
 
-            status_path = step_emit_synth_status(ft_path)
+            ft_path     = None
+            base_path   = None
+            status_path = None
 
-        step_report(ft_path, base_path, status_path)
+            if not args.skip_eval:
+                t0 = time.time()
+                if do_best_checkpoint:
+                    ft_path = step_select_best_checkpoint()
+                else:
+                    ft_path = step_eval(LORA_MODEL, "fine-tuned")
+                log(f"Fine-tuned eval completed in {_elapsed(t0)}")
+
+                if not args.skip_base_eval:
+                    t0 = time.time()
+                    base_path = step_eval(BASE_MODEL, "base-model")
+                    log(f"Base eval completed in {_elapsed(t0)}")
+                else:
+                    log("Skipping base model eval (--skip-base-eval)")
+
+                status_path = step_emit_synth_status(ft_path)
+
+            step_report(ft_path, base_path, status_path)
 
     except KeyboardInterrupt:
         log("Interrupted by user", "WARN")

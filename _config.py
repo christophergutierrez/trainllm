@@ -59,6 +59,19 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
         vllm_port = vllm_block.get("port", 8000)
         vllm_gpu_memory_util = vllm_block.get("gpu_memory_utilization", 0.85)
 
+        merge_raw = raw.get("merge")
+        merge_cfg = None
+        if merge_raw:
+            merge_adapters = merge_raw.get("adapters", "all")
+            merge_cfg = SimpleNamespace(
+                method=merge_raw.get("method", "dare_ties"),
+                density=merge_raw.get("density", 0.5),
+                weight=merge_raw.get("weight", 1.0),
+                normalize=merge_raw.get("normalize", True),
+                output_dir=exp(merge_raw.get("output_dir", str(base_dir / "merged" / adapter_name))),
+                adapters=merge_adapters,
+            )
+
         return SimpleNamespace(
             model         = raw["model"],
             adapter_name  = adapter_name,
@@ -79,6 +92,8 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
             holdout    = exp(raw["data"]["holdout"]),
 
             training = SimpleNamespace(**raw["training"]),
+
+            merge = merge_cfg,
 
             vllm_url                  = f"http://localhost:{vllm_port}",
             vllm_port                 = vllm_port,
