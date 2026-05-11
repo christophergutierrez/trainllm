@@ -298,9 +298,9 @@ merge:
   normalize: true
   output_dir: ~/git_home/trainLLM/merged/my-merge
   adapters:             # which adapters to merge (or "all")
-    - name: videoamp-api-audiences
+    - name: my-api-audiences
       weight: 1.0
-    - name: videoamp-api-audience
+    - name: my-api-audience
       weight: 1.0
 ```
 
@@ -308,23 +308,23 @@ merge:
 
 ```bash
 # Merge specific adapters (no config change needed):
-python3 merge.py --adapters videoamp-api-measurements,videoamp-api-measurement --density 0.9
+python3 merge.py --adapters my-api-measurements,my-api-measurement --density 0.9
 
 # Dry run — print mergekit config without running:
-python3 merge.py --adapters videoamp-api-measurements,videoamp-api-measurement --dry-run
+python3 merge.py --adapters my-api-measurements,my-api-measurement --dry-run
 
 # Merge and clean up intermediate unloaded models:
-python3 merge.py --adapters videoamp-api-audiences,videoamp-api-audience --density 0.9 --clean
+python3 merge.py --adapters my-api-audiences,my-api-audience --density 0.9 --clean
 ```
 
 ### Merge via cycle.py
 
 ```bash
 # Train, then merge, then eval the merged model:
-python3 cycle.py --merge --merge-adapters videoamp-api-audiences,videoamp-api-audience
+python3 cycle.py --merge --merge-adapters my-api-audiences,my-api-audience
 
 # Merge and eval only (skip training):
-python3 cycle.py --merge-only --merge-adapters videoamp-api-audiences,videoamp-api-audience
+python3 cycle.py --merge-only --merge-adapters my-api-audiences,my-api-audience
 
 # Override density:
 python3 cycle.py --merge-only --merge-density 0.95
@@ -366,7 +366,7 @@ Before major changes (swapping the base model, pruning old experiments), archive
 python3 archive.py --tag pre-nemotron --include-merged
 
 # Archive specific adapters only:
-python3 archive.py --adapters my-adapter,videoamp-api-audiences
+python3 archive.py --adapters my-adapter,my-api-audiences
 
 # List existing archives:
 python3 archive.py --list

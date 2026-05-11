@@ -1,8 +1,8 @@
 # trainLLM config — Qwen3-8B thinking layer PoC
-# Trains Qwen3-8B-Instruct to emit structured <think> reasoning traces
-# before generating VideoAmp API call JSON.
+# Trains Qwen3-8B to emit structured <think> reasoning traces
+# before generating API call JSON.
 #
-# Key differences from config.videoamp.yaml (Qwen2.5-Coder-1.5B):
+# Key differences from a typical 1.5B config:
 #   - 8B model in BF16 (128GB unified memory has plenty of headroom)
 #   - Longer max_seq_length for thinking traces (~300-600 tok per record)
 #   - Smaller batch, more gradient accumulation steps (same effective batch)
@@ -10,15 +10,15 @@
 #   - More max_steps (3x more training records after add_thinking.py)
 #
 # Workflow:
-#   1. python apisynth/scripts/add_thinking.py --input-dir apisynth/data/videoamp
+#   1. python apisynth/scripts/add_thinking.py --input-dir apisynth/data/myapi
 #   2. python prepare_data.py \
-#        --input-dir apisynth/data/videoamp \
+#        --input-dir apisynth/data/myapi \
 #        --train-out  data/training.jsonl \
 #        --holdout-out data/holdout.jsonl
 #   3. TRAINLLM_CONFIG=config.qwen3-thinking.yaml python cycle.py
 
 model: Qwen/Qwen3-8B              # base instruct model with native thinking support
-adapter_name: videoamp-api-thinking
+adapter_name: api-thinking
 chat_template: qwen-2.5           # Qwen3 uses the same ChatML format as Qwen2.5
 
 paths:

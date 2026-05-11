@@ -95,8 +95,8 @@ def latest_eval_for(adapter_name: str) -> Path | None:
 
 def training_data_stats(adapter_name: str) -> dict | None:
     """Check for per-endpoint training data and return record counts."""
-    endpoint = adapter_name.replace("videoamp-api-", "")
-    prepared = cfg.data_dir / "videoamp_prepared" / endpoint
+    endpoint = adapter_name.rsplit("-", 1)[-1]
+    prepared = cfg.data_dir / "prepared" / endpoint
     stats = {}
     for name in ["training.jsonl", "holdout.jsonl"]:
         f = prepared / name
@@ -106,9 +106,9 @@ def training_data_stats(adapter_name: str) -> dict | None:
 
 
 def find_run_config(adapter_name: str) -> Path | None:
-    endpoint = adapter_name.replace("videoamp-api-", "")
+    endpoint = adapter_name.rsplit("-", 1)[-1]
     candidates = [
-        cfg.data_dir / "videoamp_runs" / endpoint / "config.yaml",
+        cfg.data_dir / "runs" / endpoint / "config.yaml",
         cfg.base_dir / "config.yaml",
     ]
     for c in candidates:
