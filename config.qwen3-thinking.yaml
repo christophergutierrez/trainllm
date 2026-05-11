@@ -1,0 +1,76 @@
+# trainLLM config — Qwen3-8B thinking layer PoC
+# Trains Qwen3-8B-Instruct to emit structured <think> reasoning traces
+# before generating VideoAmp API call JSON.
+#
+# Key differences from config.videoamp.yaml (Qwen2.5-Coder-1.5B):
+#   - 8B model in BF16 (128GB unified memory has plenty of headroom)
+#   - Longer max_seq_length for thinking traces (~300-600 tok per record)
+#   - Smaller batch, more gradient accumulation steps (same effective batch)
+#   - Higher LoRA rank (more complex task: reasoning + generation)
+#   - More max_steps (3x more training records after add_thinking.py)
+#
+# Workflow:
+#   1. python apisynth/scripts/add_thinking.py --input-dir apisynth/data/videoamp
+#   2. python prepare_data.py \
+#        --input-dir apisynth/data/videoamp \
+#        --train-out  data/training.jsonl \
+#        --holdout-out data/holdout.jsonl
+#   3. TRAINLLM_CONFIG=config.qwen3-thinking.yaml python cycle.py
+
+model: Qwen/Qwen3-8B              # base instruct model with native thinking support
+adapter_name: videoamp-api-thinking
+chat_template: qwen-2.5           # Qwen3 uses the same ChatML format as Qwen2.5
+
+paths:
+  base_dir: ~/git_home/trainLLM
+  hf_home: ~/git_home/trainLLM/models/hf
+  unsloth_python: ~/.unsloth/studio/unsloth_studio/bin/python3
+
+data:
+  train: ~/git_home/trainLLM/data/training.jsonl
+  holdout: ~/git_home/trainLLM/data/holdout.jsonl
+
+training:
+  # Thinking traces add ~150-300 tokens per record on top of question + answer.
+  # Typical record: ~50 tok question + ~250 tok thinking + ~80 tok answer = ~380 tok.
+  # 2048 gives comfortable headroom for longer workflow traces in the PoC phase.
+  max_seq_length: 2048
+
+  # 8B in BF16 on 128GB unified memory — no need for 4-bit quantization.
+  # BF16 gives better gradient fidelity and avoids quantization artifacts
+  # during LoRA training. Use True only if memory becomes constrained.
+  load_in_4bit: false
+
+  # Higher rank than the 1.5B config: the task now requires the model to
+  # internalize reasoning patterns, not just slot-fill JSON templates.
+  lora_rank: 32
+  lora_alpha: 64
+  lora_dropout: 0
+
+  # 8B is ~5x larger than 1.5B. Reduce batch, raise accumulation to keep
+  # effective batch size at 32 (same as the 1.5B config: 8 × 4 = 32).
+  batch_size: 2
+  gradient_accumulation_steps: 16
+
+  warmup_steps: 50
+
+  # 3,000 training records (3,346 total minus ~10% holdout).
+  # batch=2, grad_accum=16 → effective batch=32 → ~94 steps/epoch.
+  # 10 epochs ≈ 940 steps. Round up to 1000 for a clean target.
+  max_steps: 1000
+
+  learning_rate: 1.0e-4    # lower than 1.5B config; 8B is more sensitive to LR
+  weight_decay: 0.01
+  lr_scheduler: cosine
+  save_steps: 200
+  save_total_limit: 3
+
+vllm:
+  port: 8000
+  gpu_memory_utilization: 0.85
+
+timeouts:
+  train_silence: 3600      # 8B trains slower; allow up to 1h silence
+  vllm_startup: 900
+  vllm_poll_interval: 30
+  eval_timeout: 3600

@@ -10,7 +10,7 @@ _KNOWN_TRAINING_KEYS = {
     "max_seq_length", "lora_rank", "lora_alpha", "lora_dropout",
     "batch_size", "gradient_accumulation_steps", "warmup_steps",
     "max_steps", "learning_rate", "weight_decay", "lr_scheduler",
-    "save_steps", "save_total_limit",
+    "save_steps", "save_total_limit", "load_in_4bit",
 }
 
 

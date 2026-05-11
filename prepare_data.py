@@ -49,17 +49,23 @@ DEFAULT_ORG = os.environ.get("TRAINLLM_ORG", "acme")
 def build_system_prompt(org_name: str) -> str:
     org_label = org_name.strip() or DEFAULT_ORG
     return (
-        f"You are an {org_label} API assistant. "
+        f"You are a {org_label} API assistant. "
         "Given a natural language request, respond with the correct API call "
         "as a JSON object inside a code block. "
-        "The JSON must have an \"endpoint\" field (e.g. \"GET /v1/resources\") "
-        "and a \"params\" field containing the query or path parameters."
+        "Think through the request before answering. "
+        "For a single call use: {\"endpoint\": \"GET /...\", \"params\": {...}}. "
+        "For a two-step call (when an ID must be fetched first) use: "
+        "{\"steps\": [{\"endpoint\": \"GET /...\", \"params\": {}}, "
+        "{\"endpoint\": \"GET /.../{id}\", \"params\": {\"id\": \"{{steps.0.fieldName}}\"}}]}."
     )
 
 
-def format_response(api_call: dict) -> str:
-    """Render api_call as a fenced JSON code block."""
-    return "```json\n" + json.dumps(api_call, indent=2) + "\n```"
+def format_response(api_call: dict, thinking: str = None) -> str:
+    """Render api_call as a fenced JSON code block, optionally preceded by a thinking block."""
+    body = "```json\n" + json.dumps(api_call, indent=2) + "\n```"
+    if thinking:
+        return f"<think>\n{thinking}\n</think>\n{body}"
+    return body
 
 
 def to_sharegpt(record: dict, system_prompt: str) -> dict:
@@ -67,13 +73,13 @@ def to_sharegpt(record: dict, system_prompt: str) -> dict:
         "conversations": [
             {"from": "system", "value": system_prompt},
             {"from": "human",  "value": record["question"]},
-            {"from": "gpt",    "value": format_response(record["api_call"])},
+            {"from": "gpt",    "value": format_response(record["api_call"], record.get("thinking"))},
         ]
     }
 
 
 def to_holdout(record: dict, endpoint_name: str, idx: int, system_prompt: str) -> dict:
-    response = format_response(record["api_call"])
+    response = format_response(record["api_call"], record.get("thinking"))
     params = record["api_call"].get("params", {})
 
     # Tag conventions: endpoint name + structural categories

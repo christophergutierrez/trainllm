@@ -30,7 +30,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=MODEL_NAME,
     max_seq_length=cfg.training.max_seq_length,
     dtype=None,
-    load_in_4bit=True,
+    load_in_4bit=cfg.training.load_in_4bit,
     device_map={"": torch.cuda.current_device()},
     attn_implementation="sdpa",
     # Skip Unsloth's internal redirect to `unsloth/...-bnb-4bit`; load the
