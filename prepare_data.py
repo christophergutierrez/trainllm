@@ -208,13 +208,27 @@ def main():
     if args.holdout_out:
         out = Path(args.holdout_out).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
+
+        # Preserve any hand-curated records (canonical-*, mcp-*) from a prior run
+        preserved = []
+        if out.exists():
+            for line in out.read_text().splitlines():
+                if not line.strip(): continue
+                r = json.loads(line)
+                if any(r.get("id","").startswith(p) for p in ("canonical-","mcp-","mcp_")):
+                    preserved.append(line)
+
         ep_counters: dict[str, int] = {}
         with open(out, "w") as f:
+            # Write hand-curated records first so they survive future regenerations
+            for line in preserved:
+                f.write(line + "\n")
             for ep, record in holdout_items:
                 idx = ep_counters.get(ep, 0)
                 ep_counters[ep] = idx + 1
                 f.write(json.dumps(to_holdout(record, ep, idx, system_prompt)) + "\n")
-        print(f"  Holdout:   {len(holdout_items)} records → {out}")
+        kept = len(preserved)
+        print(f"  Holdout:   {len(holdout_items)} generated + {kept} preserved → {len(holdout_items)+kept} total → {out}")
 
 
 if __name__ == "__main__":
