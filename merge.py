@@ -17,7 +17,6 @@ Requires: mergekit (pip install -e mergekit/)
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -72,20 +71,20 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 base = AutoModelForCausalLM.from_pretrained(
-    "{cfg.model}",
+    {repr(str(cfg.model))},
     torch_dtype=torch.bfloat16,
     device_map="cpu",
 )
-model = PeftModel.from_pretrained(base, "{adapter_path}", torch_dtype=torch.bfloat16)
+model = PeftModel.from_pretrained(base, {repr(str(adapter_path))}, torch_dtype=torch.bfloat16)
 model = model.merge_and_unload()
-model.save_pretrained("{dest}", safe_serialization=True)
+model.save_pretrained({repr(str(dest))}, safe_serialization=True)
 
-tokenizer = AutoTokenizer.from_pretrained("{cfg.model}")
-tokenizer.save_pretrained("{dest}")
+tokenizer = AutoTokenizer.from_pretrained({repr(str(cfg.model))})
+tokenizer.save_pretrained({repr(str(dest))})
 
 # Fix extra_special_tokens format for vLLM compatibility
 import json as _json
-_tc_path = "{dest}" + "/tokenizer_config.json"
+_tc_path = {repr(str(dest))} + "/tokenizer_config.json"
 with open(_tc_path) as _f:
     _tc = _json.load(_f)
 _est = _tc.get("extra_special_tokens")
@@ -104,10 +103,12 @@ print("  Saved unloaded model to {dest}")
         env = {**os.environ, "HF_HOME": str(cfg.hf_home)}
         result = subprocess.run(
             [str(cfg.unsloth_python), script_path],
+            capture_output=True,
             env=env,
             cwd=str(cfg.base_dir),
         )
         if result.returncode != 0:
+            print(result.stderr.decode(errors="replace"), file=sys.stderr)
             raise RuntimeError(f"merge_and_unload failed for {adapter_name}")
     finally:
         os.unlink(script_path)
@@ -174,13 +175,13 @@ from mergekit.config import MergeConfiguration
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
 
-with open("{config_path}") as f:
+with open({repr(str(config_path))}) as f:
     config_dict = yaml.safe_load(f)
 
 config = MergeConfiguration.model_validate(config_dict)
 run_merge(
     config,
-    out_path="{output_dir}",
+    out_path={repr(str(output_dir))},
     options=MergeOptions(
         lazy_unpickle=True,
         cuda={"True" if cuda else "False"},
@@ -196,8 +197,13 @@ print("Merge complete.")
     try:
         env = {**os.environ, "HF_HOME": str(cfg.hf_home)}
         print(f"  Running mergekit via {cfg.unsloth_python}")
-        result = subprocess.run([str(cfg.unsloth_python), script_path], env=env)
+        result = subprocess.run(
+            [str(cfg.unsloth_python), script_path],
+            capture_output=True,
+            env=env,
+        )
         if result.returncode != 0:
+            print(result.stderr.decode(errors="replace"), file=sys.stderr)
             raise RuntimeError(f"mergekit failed (exit {result.returncode})")
     finally:
         os.unlink(script_path)
