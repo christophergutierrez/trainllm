@@ -341,7 +341,7 @@ def main():
                         help=f"Organization label for the generated system prompt (default: {DEFAULT_ORG})")
     parser.add_argument("--prompt-style", choices=["conversational", "structural"], default=None,
                         help="System prompt style: 'conversational' (default, better for <=8B) or "
-                             "'structural' (~60%% shorter, better for 27B+). Overrides config trace_style.")
+                             "'structural' (~60%% shorter, better for 27B+). Overrides TRAINLLM_PROMPT_STYLE env var.")
     parser.add_argument("--trace-style", choices=["linear", "qoc"], default="linear",
                         help="Thinking trace format: 'linear' (Entity/Scope/Use/NOT) or "
                              "'qoc' (Question/Option/Criteria — forces explicit option rejection)")

@@ -71,6 +71,8 @@ timeouts:
 
 **Env var overrides** (for one-offs without editing config):
 
+**`cycle.py` / `train.py` / `eval.py`**
+
 | Variable | Overrides |
 |----------|-----------|
 | `TRAINLLM_CONFIG` | Path to config YAML (default: `config.yaml` in repo root) |
@@ -80,6 +82,33 @@ timeouts:
 | `MODEL` | adapter/model name for eval |
 | `HOLDOUT` | `data.holdout` |
 | `VLLM_URL` | vLLM server URL |
+
+**`prepare_data.py`**
+
+| Variable | Effect |
+|----------|--------|
+| `TRAINLLM_ORG` | Organization label for generated system prompts (default: `acme`) |
+| `TRAINLLM_PROMPT_STYLE` | System prompt style: `conversational` (default) or `structural` |
+
+**`train_dpo.py`**
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `DPO_DATA` | `data/dpo.jsonl` | Path to DPO pairs JSONL |
+| `SFT_DIR` | `lora/<adapter>/final` | Path to trained SFT adapter |
+| `DPO_BETA` | `0.3` | KL penalty coefficient |
+| `DPO_MAX_STEPS` | `100` | Training steps |
+| `DPO_LR` | `5e-5` | Learning rate |
+| `DPO_BATCH` | from config | Per-device batch size |
+| `DPO_GRAD_ACCUM` | from config | Gradient accumulation steps |
+
+**`llm_judge.py`**
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `ANTHROPIC_API_KEY` | — | If set, uses the Anthropic SDK; otherwise shells out to `claude -p` |
+| `JUDGE_MODEL` | `claude-haiku-4-5-20251001` | Claude model for judging |
+| `JUDGE_CODEBASE` | `acme` | Substitutes the codebase name in the rubric |
 
 ## Data formats
 
@@ -404,7 +433,9 @@ Runs a Direct Preference Optimization pass on top of an existing SFT adapter. Us
 
 ### `llm_judge.py` — LLM-as-judge rescoring
 
-Rescores an existing eval JSON using Claude Haiku as a semantic judge. The similarity metric (`difflib.SequenceMatcher`) undercounts correct-but-differently-worded code; the judge metric measures correctness and convention adherence instead. **Note:** the default rubric contains Go/codebase-specific conventions — customize `RUBRIC` or `JUDGE_CODEBASE` for other domains.
+Rescores an existing eval JSON using Claude Haiku as a semantic judge. The similarity metric (`difflib.SequenceMatcher`) undercounts correct-but-differently-worded code; the judge metric measures correctness and convention adherence instead.
+
+**Note:** The rubric is hardcoded for Go/codebase-specific conventions (error wrapping, pagination patterns, HTTP auth format, etc.). `JUDGE_CODEBASE` substitutes only the codebase name placeholder — the Go-specific scoring criteria remain unchanged. For non-Go output, edit the `RUBRIC` string in `llm_judge.py` directly.
 
 ### `prepare_data.py` — API training data preparation
 
