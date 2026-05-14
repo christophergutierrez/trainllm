@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 import _config
-from prepare_data import load_endpoint, stratified_split, to_holdout, to_sharegpt
+from prepare_data import build_system_prompt, load_endpoint, stratified_split, to_holdout, to_sharegpt
 
 DEFAULT_DATASET = os.environ.get("TRAINLLM_DATASET", "acme")
 
@@ -122,6 +122,8 @@ def prepare_endpoint_files(
     ep_name, records = load_endpoint(endpoint_file)
     train_items, holdout_items = stratified_split({ep_name: records}, holdout_frac, seed)
 
+    system_prompt = build_system_prompt(org_name)
+
     out_dir = prepared_root / endpoint
     out_dir.mkdir(parents=True, exist_ok=True)
     train_path = out_dir / "training.jsonl"
@@ -129,11 +131,11 @@ def prepare_endpoint_files(
 
     with train_path.open("w") as f:
         for _, record in train_items:
-            f.write(json.dumps(to_sharegpt(record, org_name)) + "\n")
+            f.write(json.dumps(to_sharegpt(record, system_prompt)) + "\n")
 
     with holdout_path.open("w") as f:
         for idx, (_, record) in enumerate(holdout_items):
-            f.write(json.dumps(to_holdout(record, endpoint, idx, org_name)) + "\n")
+            f.write(json.dumps(to_holdout(record, endpoint, idx, system_prompt)) + "\n")
 
     return train_path, holdout_path, len(train_items), len(holdout_items)
 
