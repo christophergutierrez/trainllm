@@ -657,49 +657,123 @@ def _checkpoint_module_name(cp: Path) -> str:
     return f"{LORA_MODEL}-ckpt{cp.name.split('-')[1]}"
 
 
+def _drop_page_cache() -> None:
+    """Drop OS page cache to free unified memory on GB10 after training."""
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "sh", "-c", "sync && echo 3 > /proc/sys/vm/drop_caches"],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode == 0:
+            log("Dropped OS page cache (unified memory reclaim)")
+        else:
+            log("Page cache drop failed (sudo NOPASSWD not configured for drop_caches)", "WARN")
+    except Exception as exc:
+        log(f"Could not drop page cache: {exc}", "WARN")
+
+
+def _reload_nvidia_uvm() -> bool:
+    """Reload nvidia_uvm module to reclaim leaked CUDA allocations."""
+    try:
+        r1 = subprocess.run(["sudo", "-n", "/usr/sbin/modprobe", "-r", "nvidia_uvm"],
+                            capture_output=True, timeout=10)
+        if r1.returncode != 0:
+            stderr = r1.stderr.decode() if isinstance(r1.stderr, bytes) else r1.stderr
+            log(f"nvidia_uvm unload failed: {stderr.strip()}", "WARN")
+            return False
+        r2 = subprocess.run(["sudo", "-n", "/usr/sbin/modprobe", "nvidia_uvm"],
+                            capture_output=True, timeout=10)
+        if r2.returncode == 0:
+            log("Reloaded nvidia_uvm module (CUDA memory reclaimed)")
+            return True
+        log("nvidia_uvm reload failed", "WARN")
+    except Exception as exc:
+        log(f"nvidia_uvm reload error: {exc}", "WARN")
+    return False
+
+
+def _query_cuda_free_gib() -> tuple[float, float] | None:
+    """Query actual CUDA free/total memory via PyTorch (works on GB10 unified memory)."""
+    try:
+        result = subprocess.run(
+            [UNSLOTH_PYTHON, "-c",
+             "import torch; f,t=torch.cuda.mem_get_info(); print(f'{f/1024**3:.2f},{t/1024**3:.2f}')"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(",")
+            return float(parts[0]), float(parts[1])
+    except Exception:
+        pass
+    return None
+
+
+def _reclaim_gpu_memory(required_gib: float, total_gib: float) -> None:
+    """Escalating memory reclaim: page cache → nvidia_uvm reload."""
+    _drop_page_cache()
+    time.sleep(2)
+
+    mem = _query_cuda_free_gib()
+    if mem and mem[0] >= required_gib:
+        return
+
+    free = mem[0] if mem else 0
+    log(f"Page cache flush insufficient ({free:.1f}/{total_gib:.1f} GiB free, "
+        f"need {required_gib:.1f}). Trying nvidia_uvm reload...", "WARN")
+    _reload_nvidia_uvm()
+
+
 def _wait_for_free_gpu_memory(min_fraction: float, timeout_s: int = 120) -> None:
     """
-    Poll nvidia-smi until enough free memory is available for vLLM startup.
+    Ensure enough GPU memory is available for vLLM startup.
 
-    Training sometimes returns before CUDA memory is fully reclaimed. vLLM
-    checks free memory immediately and exits if the requested utilization target
-    is not currently available.
+    On GB10 unified memory, nvidia-smi doesn't report memory usage. Instead
+    we query CUDA directly via PyTorch. Escalating reclaim strategy:
+      1. Drop OS page cache (training leaves model weights cached)
+      2. Reload nvidia_uvm module (reclaims leaked CUDA allocations)
+      3. Poll until memory is available or timeout
     """
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    mem = _query_cuda_free_gib()
+    if mem is None:
+        # Not a unified memory system or PyTorch unavailable — try nvidia-smi
         try:
             result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=memory.free,memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
+                ["nvidia-smi", "--query-gpu=memory.free,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, check=True,
             )
+            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            if lines:
+                free_mb, total_mb = [float(p.strip()) for p in lines[0].split(",", 1)]
+                mem = (free_mb / 1024, total_mb / 1024)
         except Exception as exc:
-            log(f"Could not query GPU memory via nvidia-smi: {exc}", "WARN")
+            log(f"Could not query GPU memory: {exc}", "WARN")
             return
 
-        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if not lines:
-            return
+    if mem is None:
+        return
 
-        try:
-            free_mb, total_mb = [float(part.strip()) for part in lines[0].split(",", 1)]
-        except ValueError:
-            return
+    free_gib, total_gib = mem
+    required_gib = total_gib * min_fraction
 
-        required_mb = total_mb * min_fraction
-        if free_mb >= required_mb:
-            log(f"GPU memory ready for vLLM: {free_mb/1024:.1f} / {total_mb/1024:.1f} GiB free")
-            return
+    if free_gib >= required_gib:
+        log(f"GPU memory ready: {free_gib:.1f}/{total_gib:.1f} GiB free")
+        return
 
-        log(
-            f"Waiting for GPU memory to recover: {free_mb/1024:.1f} / {total_mb/1024:.1f} GiB free "
-            f"(need {required_mb/1024:.1f} GiB for utilization={min_fraction:.2f})"
-        )
+    log(f"GPU memory low: {free_gib:.1f}/{total_gib:.1f} GiB free "
+        f"(need {required_gib:.1f} GiB) — starting reclaim")
+    _reclaim_gpu_memory(required_gib, total_gib)
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        mem = _query_cuda_free_gib()
+        if mem:
+            free_gib = mem[0]
+            if free_gib >= required_gib:
+                log(f"GPU memory ready: {free_gib:.1f}/{total_gib:.1f} GiB free "
+                    f"(need {required_gib:.1f} GiB)")
+                return
+            log(f"Waiting for GPU memory: {free_gib:.1f}/{total_gib:.1f} GiB free")
         time.sleep(5)
 
     log("Timed out waiting for GPU memory recovery; attempting vLLM startup anyway", "WARN")
@@ -1138,10 +1212,27 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
     def r(s: str = "") -> None:
         log(s, "REPORT")
 
+    convergence_file = LORA_DIR / "convergence.json"
+    convergence = None
+    if convergence_file.exists():
+        try:
+            convergence = json.loads(convergence_file.read_text())
+        except Exception:
+            pass
+
     r()
     r("=" * 64)
     r("  CYCLE COMPLETE — EVAL SUMMARY")
     r("=" * 64)
+
+    if convergence:
+        r()
+        r(f"  Training: {convergence.get('first_loss', '?')} → {convergence.get('final_loss', '?')} loss "
+          f"over {convergence.get('total_steps', '?')} steps ({convergence.get('final_epoch', '?')} epochs)")
+        if convergence.get("stopped_early"):
+            r(f"  *** Early stopped at step {convergence.get('total_steps')} "
+              f"(plateau at {convergence.get('best_loss', '?')}, step {convergence.get('best_step', '?')}) ***")
+        r(f"  Best loss: {convergence.get('best_loss', '?')} at step {convergence.get('best_step', '?')}")
 
     if ft_data and base_data:
         ft_avg   = ft_data["summary"]["avg_score"]
@@ -1444,10 +1535,17 @@ def main() -> None:
                             merge_adapters=merge_adapter_names,
                         )
 
-                if not args.skip_base_eval:
-                    t0 = time.time()
-                    base_path = step_eval(VLLM_MODEL, "base-model")
-                    log(f"Base eval completed in {_elapsed(t0)}")
+                if args.skip_base_eval:
+                    log("Skipping base model eval (--skip-base-eval)")
+                else:
+                    existing_base = find_latest_eval(VLLM_MODEL)
+                    if existing_base and (time.time() - existing_base.stat().st_mtime) / 3600 < 168:
+                        log(f"Reusing recent base eval: {existing_base.name}")
+                        base_path = existing_base
+                    else:
+                        t0 = time.time()
+                        base_path = step_eval(VLLM_MODEL, "base-model")
+                        log(f"Base eval completed in {_elapsed(t0)}")
 
                 status_path = step_emit_synth_status(ft_path)
 
@@ -1485,12 +1583,24 @@ def main() -> None:
 
                 if serving_merged:
                     log("Serving merged model — base model not available for comparison, skipping base eval")
-                elif not args.skip_base_eval:
-                    t0 = time.time()
-                    base_path = step_eval(VLLM_MODEL, "base-model")
-                    log(f"Base eval completed in {_elapsed(t0)}")
-                else:
+                elif args.skip_base_eval:
                     log("Skipping base model eval (--skip-base-eval)")
+                else:
+                    existing_base = find_latest_eval(VLLM_MODEL)
+                    if existing_base:
+                        age_h = (time.time() - existing_base.stat().st_mtime) / 3600
+                        if age_h < 168:  # 7 days
+                            log(f"Reusing recent base eval ({age_h:.0f}h old): {existing_base.name}")
+                            base_path = existing_base
+                        else:
+                            log(f"Base eval is {age_h:.0f}h old (>7d) — re-running")
+                            t0 = time.time()
+                            base_path = step_eval(VLLM_MODEL, "base-model")
+                            log(f"Base eval completed in {_elapsed(t0)}")
+                    else:
+                        t0 = time.time()
+                        base_path = step_eval(VLLM_MODEL, "base-model")
+                        log(f"Base eval completed in {_elapsed(t0)}")
 
                 status_path = step_emit_synth_status(ft_path)
 
