@@ -238,7 +238,7 @@ def build_system_prompt(org_name: str, style: str = "conversational") -> str:
     )
 
 
-def format_response(api_call: dict, thinking: str = None, trace_style: str = "linear") -> str:
+def format_response(api_call: dict, thinking: str | None = None, trace_style: str = "linear") -> str:
     """Render api_call as a fenced JSON code block, optionally preceded by a thinking block."""
     body = "```json\n" + json.dumps(api_call, indent=2) + "\n```"
     if thinking:
