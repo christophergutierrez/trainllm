@@ -21,6 +21,7 @@ import json
 import os
 import sys
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -51,12 +52,16 @@ def query(record: dict) -> tuple[str, str, float, dict]:
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        max_tokens=1024,
+        max_tokens=800,
         temperature=0.0,  # deterministic greedy decoding — eliminates vLLM sampling variance
         seed=42,
     )
-    generated = resp.choices[0].message.content or ""
+    choice = resp.choices[0]
+    generated = choice.message.content or ""
+    truncated = choice.finish_reason == "length"
     diag = diagnostics(generated, expected)
+    diag["truncated"] = truncated
+    diag["completion_tokens"] = resp.usage.completion_tokens if resp.usage else 0
     return generated, expected, similarity(expected, generated), diag
 
 
@@ -72,15 +77,16 @@ print(f"Records: {len(records)}")
 print(f"Server:  {BASE_URL}")
 print("=" * 60)
 
-results = []
-for i, r in enumerate(records):
+EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", "8"))
+
+
+def _eval_one(i: int, r: dict) -> dict:
     rid = r.get("id", str(i))
     label = r.get("label", rid)
     try:
         generated, expected, score, diag = query(r)
         b = band(score)
-        print(f"  [{b:9s}  {score:.2f}]  {rid}  {label}")
-        results.append({
+        return {
             "id":                 rid,
             "label":              label,
             "source_file":        r.get("source_file", ""),
@@ -92,16 +98,30 @@ for i, r in enumerate(records):
             "generated":          generated,
             "error":              None,
             **diag,
-        })
+        }
     except Exception as e:
-        print(f"  [ERROR     ]  {rid}  {label}  {e}")
-        results.append({
+        return {
             "id": rid, "label": label,
             "conventions_tested": r.get("conventions_tested", []),
             "score": 0.0, "band": "ERROR",
             "prompt": "", "expected": "", "generated": "", "error": str(e),
             "length_ratio": 0.0,
-        })
+        }
+
+
+print(f"Workers: {EVAL_WORKERS}")
+results = [None] * len(records)
+with ThreadPoolExecutor(max_workers=EVAL_WORKERS) as pool:
+    futures = {pool.submit(_eval_one, i, r): i for i, r in enumerate(records)}
+    for fut in as_completed(futures):
+        idx = futures[fut]
+        result = fut.result()
+        results[idx] = result
+        trunc_flag = " TRUNCATED" if result.get("truncated") else ""
+        if result["band"] == "ERROR":
+            print(f"  [ERROR     ]  {result['id']}  {result['label']}  {result['error']}")
+        else:
+            print(f"  [{result['band']:9s}  {result['score']:.2f}]  {result['id']}  {result['label']}{trunc_flag}")
 
 
 # ── Aggregate ──────────────────────────────────────────────────────────────────
@@ -125,6 +145,9 @@ conv_summary = sorted(
 
 poor_results     = [r for r in results if r["band"] in ("POOR", "PARTIAL", "ERROR")]
 weak_conventions = [c for c in conv_summary if c["avg"] < THRESHOLDS["good"]]
+truncated_count  = sum(1 for r in results if r.get("truncated"))
+if truncated_count:
+    print(f"\n⚠ {truncated_count}/{len(results)} responses hit max_tokens (800) — check for verbosity issues")
 
 
 # ── Write JSON ─────────────────────────────────────────────────────────────────

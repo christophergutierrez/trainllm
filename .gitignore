@@ -1,21 +1,27 @@
-# devtribunal (remove these lines to version-control agents and skills)
+# Tool config
 .devtribunal_agents/
-.claude/commands/dt/
+.claude/
+.agents/
+.codex/
 
-# Track data/ and logs/ as directories, but exclude their contents.
+# Data and outputs — tracked as directories, contents excluded
 data/*
 !data/.gitkeep
-# Durable local API training inputs and per-endpoint prepared artifacts live
-# under data/ and stay out of git by design.
 logs/*
 !logs/.gitkeep
 lora/*
 !lora/.gitkeep
-__pycache__/
 evals/*
-handoff
+!evals/.gitkeep
+
+# Large artifacts
 models/
-archive/
 merged/
+archive/
+handoff/
+
+# Build artifacts
+__pycache__/
+_unsloth_sentencepiece_temp/
 unsloth*
 tmp/

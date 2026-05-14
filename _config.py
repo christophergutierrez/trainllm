@@ -58,6 +58,8 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
         vllm_block = raw.get("vllm") or {}
         vllm_port = vllm_block.get("port", 8000)
         vllm_gpu_memory_util = vllm_block.get("gpu_memory_utilization", 0.85)
+        vllm_model = vllm_block.get("model", raw["model"])
+        vllm_max_model_len = vllm_block.get("max_model_len", raw["training"]["max_seq_length"] * 2)
 
         merge_raw = raw.get("merge")
         merge_cfg = None
@@ -98,6 +100,8 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
             vllm_url                  = f"http://localhost:{vllm_port}",
             vllm_port                 = vllm_port,
             vllm_gpu_memory_util      = vllm_gpu_memory_util,
+            vllm_max_model_len        = vllm_max_model_len,
+            vllm_model                = vllm_model,
 
             train_silence_timeout = raw["timeouts"]["train_silence"],
             vllm_startup_timeout  = raw["timeouts"]["vllm_startup"],

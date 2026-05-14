@@ -46,6 +46,7 @@ cfg = _config.load()
 
 LORA_DIR     = cfg.lora_dir
 FINAL_DIR    = cfg.final_dir
+MERGED_DIR   = cfg.base_dir / "merged" / cfg.adapter_name
 EVALS_DIR    = cfg.evals_dir
 LOGS_DIR     = cfg.logs_dir
 DATA_DIR     = cfg.data_dir
@@ -53,6 +54,7 @@ TRAIN_SCRIPT = Path(__file__).parent / "train.py"
 EVAL_SCRIPT  = Path(__file__).parent / "eval.py"
 VLLM_URL     = cfg.vllm_url
 BASE_MODEL   = cfg.model
+VLLM_MODEL   = cfg.vllm_model
 LORA_MODEL   = cfg.adapter_name
 HF_HOME      = str(cfg.hf_home)
 UNSLOTH_PYTHON = str(cfg.unsloth_python)
@@ -327,30 +329,74 @@ def _find_vllm_pids() -> set[str]:
     return alive
 
 
+def _find_all_vllm_pids() -> set[str]:
+    """Find PIDs of ALL vLLM-related processes, including orphaned children."""
+    pids = _find_vllm_pids()
+    child_patterns = [
+        "vllm.v1.engine.core",
+        "nccl_heartbeat_monitor",
+        "multiprocessing.resource_tracker",
+    ]
+    for pattern in child_patterns:
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+        pids.update(pid.strip() for pid in result.stdout.strip().split() if pid.strip())
+    alive: set[str] = set()
+    for pid in pids:
+        try:
+            os.kill(int(pid), 0)
+            alive.add(pid)
+        except (ProcessLookupError, ValueError):
+            pass
+    return alive
+
+
+def _kill_process_groups(pids: set[str], sig: int) -> None:
+    """Kill by process group first, then individual PIDs as fallback."""
+    seen_pgids: set[int] = set()
+    for pid in pids:
+        try:
+            pgid = os.getpgid(int(pid))
+            if pgid not in seen_pgids:
+                seen_pgids.add(pgid)
+                os.killpg(pgid, sig)
+                log(f"Sent {signal.Signals(sig).name} to process group {pgid}")
+        except (ProcessLookupError, PermissionError):
+            try:
+                os.kill(int(pid), sig)
+                log(f"Sent {signal.Signals(sig).name} to PID {pid}")
+            except (ProcessLookupError, PermissionError):
+                log(f"PID {pid} already gone")
+
+
 def step_stop_vllm() -> None:
     log_section("STEP 2: Stop any running vLLM server")
     if cfg.runtime == "external":
         log("runtime=external — server is user-managed; skipping stop")
         return
-    pids = _find_vllm_pids()
+    pids = _find_all_vllm_pids()
     if not pids:
-        log("No vllm serve process found — nothing to stop")
+        log("No vLLM processes found — nothing to stop")
         return
-    for pid in pids:
-        log(f"Sending SIGTERM to vllm serve PID {pid}")
-        try:
-            os.kill(int(pid), signal.SIGTERM)
-        except ProcessLookupError:
-            log(f"PID {pid} already gone")
-    time.sleep(3)
-    pids = _find_vllm_pids()
-    for pid in pids:
-        log(f"Still running — sending SIGKILL to PID {pid}", "WARN")
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    log("vLLM stopped")
+    log(f"Found {len(pids)} vLLM-related process(es): {pids}")
+    _kill_process_groups(pids, signal.SIGTERM)
+    # GB10 unified memory: SIGKILL leaks CUDA driver memory.
+    # Give vLLM 30s for clean CUDA teardown before escalating.
+    for i in range(30):
+        time.sleep(1)
+        pids = _find_all_vllm_pids()
+        if not pids:
+            log(f"All vLLM processes exited cleanly after {i+1}s")
+            return
+    pids = _find_all_vllm_pids()
+    if pids:
+        log(f"{len(pids)} process(es) survived 30s SIGTERM — SIGKILL will leak GPU memory", "WARN")
+        _kill_process_groups(pids, signal.SIGKILL)
+        time.sleep(2)
+    final = _find_all_vllm_pids()
+    if final:
+        log(f"WARNING: {len(final)} vLLM process(es) still alive: {final}", "WARN")
+    else:
+        log("All vLLM processes stopped (via SIGKILL — GPU memory may be leaked)", "WARN")
 
 
 # ── Step 3: Train ─────────────────────────────────────────────────────────────
@@ -686,24 +732,44 @@ def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | Non
 
     _wait_for_free_gpu_memory(cfg.vllm_gpu_memory_util)
 
-    lora_modules = [f"{LORA_MODEL}={FINAL_DIR}"]
-    if include_checkpoints:
-        for cp in _checkpoint_dirs():
-            lora_modules.append(f"{_checkpoint_module_name(cp)}={cp}")
-        if len(lora_modules) > 1:
-            log(f"Loading {len(lora_modules)} LoRA modules (final + "
-                f"{len(lora_modules)-1} checkpoint(s)) for best-checkpoint selection")
+    use_merged = MERGED_DIR.exists() and (MERGED_DIR / "config.json").exists()
 
-    cmd = [
-        "vllm", "serve", BASE_MODEL,
-        "--dtype", "bfloat16",
-        "--gpu-memory-utilization", str(cfg.vllm_gpu_memory_util),
-        "--enforce-eager",   # required on Blackwell (GB10): avoids torch.compile hang
-        "--enable-lora",
-        "--lora-modules", *lora_modules,
-        "--max-lora-rank", str(cfg.training.lora_rank),
-        "--port", str(cfg.vllm_port),
-    ]
+    chat_template = Path(__file__).parent / "templates" / "chatml.jinja"
+
+    if use_merged:
+        log(f"Serving merged model from {MERGED_DIR}")
+        cmd = [
+            "vllm", "serve", str(MERGED_DIR),
+            "--dtype", "bfloat16",
+            "--gpu-memory-utilization", str(cfg.vllm_gpu_memory_util),
+            "--enforce-eager",
+            "--trust-remote-code",
+            "--max-model-len", str(cfg.vllm_max_model_len),
+            "--served-model-name", LORA_MODEL,
+            "--port", str(cfg.vllm_port),
+            "--chat-template", str(chat_template),
+        ]
+    else:
+        lora_modules = [f"{LORA_MODEL}={FINAL_DIR}"]
+        if include_checkpoints:
+            for cp in _checkpoint_dirs():
+                lora_modules.append(f"{_checkpoint_module_name(cp)}={cp}")
+            if len(lora_modules) > 1:
+                log(f"Loading {len(lora_modules)} LoRA modules (final + "
+                    f"{len(lora_modules)-1} checkpoint(s)) for best-checkpoint selection")
+
+        cmd = [
+            "vllm", "serve", VLLM_MODEL,
+            "--dtype", "bfloat16",
+            "--gpu-memory-utilization", str(cfg.vllm_gpu_memory_util),
+            "--enforce-eager",
+            "--trust-remote-code",
+            "--max-model-len", str(cfg.vllm_max_model_len),
+            "--enable-lora",
+            "--lora-modules", *lora_modules,
+            "--max-lora-rank", str(cfg.training.lora_rank),
+            "--port", str(cfg.vllm_port),
+        ]
     env = {**os.environ, "HF_HOME": HF_HOME}
 
     log(f"$ {shlex.join(cmd)}")
@@ -1380,7 +1446,7 @@ def main() -> None:
 
                 if not args.skip_base_eval:
                     t0 = time.time()
-                    base_path = step_eval(BASE_MODEL, "base-model")
+                    base_path = step_eval(VLLM_MODEL, "base-model")
                     log(f"Base eval completed in {_elapsed(t0)}")
 
                 status_path = step_emit_synth_status(ft_path)
@@ -1388,8 +1454,10 @@ def main() -> None:
             step_report(ft_path, base_path, status_path)
 
         else:
-            # ── Standard multi-LoRA path (unchanged) ──
-            do_best_checkpoint = not args.no_best_checkpoint and not args.skip_train
+            # ── Standard path (merged or multi-LoRA) ──
+            serving_merged = MERGED_DIR.exists() and (MERGED_DIR / "config.json").exists()
+            do_best_checkpoint = (not args.no_best_checkpoint and not args.skip_train
+                                  and not serving_merged)
 
             if not args.skip_serve:
                 t0 = time.time()
@@ -1415,9 +1483,11 @@ def main() -> None:
                     if ft_data:
                         _emit_result_json(eval_avg_score=ft_data["summary"]["avg_score"])
 
-                if not args.skip_base_eval:
+                if serving_merged:
+                    log("Serving merged model — base model not available for comparison, skipping base eval")
+                elif not args.skip_base_eval:
                     t0 = time.time()
-                    base_path = step_eval(BASE_MODEL, "base-model")
+                    base_path = step_eval(VLLM_MODEL, "base-model")
                     log(f"Base eval completed in {_elapsed(t0)}")
                 else:
                     log("Skipping base model eval (--skip-base-eval)")
