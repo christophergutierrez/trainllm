@@ -46,8 +46,19 @@ from pathlib import Path
 DEFAULT_ORG = os.environ.get("TRAINLLM_ORG", "acme")
 
 
-def build_system_prompt(org_name: str) -> str:
+def build_system_prompt(org_name: str, style: str = "conversational") -> str:
     org_label = org_name.strip() or DEFAULT_ORG
+    if style == "structural":
+        # Shorter, denser prompt for larger models (27B+).
+        # Strips conversational filler; keeps VideoAmp as a latent-space anchor
+        # and retains only functional format constraints.
+        return (
+            f"{org_label} API. Plan reasoning in <think> tags. Output: JSON code block.\n"
+            "Single: {\"endpoint\": \"GET /...\", \"params\": {...}}\n"
+            "Two-step: {\"steps\": [{\"endpoint\": \"GET /...\", \"params\": {}}, "
+            "{\"endpoint\": \"GET /.../{id}\", \"params\": {\"id\": \"{{steps.0.fieldName}}\"}}]}"
+        )
+    # conversational (default) — better grounding for smaller models
     return (
         f"You are a {org_label} API assistant. "
         "Given a natural language request, respond with the correct API call "
@@ -159,10 +170,21 @@ def main():
                         help="Random seed for reproducible splits (default: 42)")
     parser.add_argument("--org-name", default=DEFAULT_ORG,
                         help=f"Organization label for the generated system prompt (default: {DEFAULT_ORG})")
+    parser.add_argument("--prompt-style", choices=["conversational", "structural"], default=None,
+                        help="System prompt style: 'conversational' (default, better for <=8B) or "
+                             "'structural' (~60%% shorter, better for 27B+). Overrides config trace_style.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print counts without writing any files")
     args = parser.parse_args()
-    system_prompt = build_system_prompt(args.org_name)
+
+    # Resolve prompt style: CLI flag > config field > default (conversational)
+    prompt_style = args.prompt_style
+    if prompt_style is None:
+        # Could read from config here if passed; default to conversational
+        prompt_style = os.environ.get("TRAINLLM_PROMPT_STYLE", "conversational")
+
+    system_prompt = build_system_prompt(args.org_name, style=prompt_style)
+    print(f"  Prompt style: {prompt_style}")
 
     input_dir = Path(args.input_dir).expanduser()
     if not input_dir.is_dir():

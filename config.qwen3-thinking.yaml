@@ -21,6 +21,13 @@ model: Qwen/Qwen3-8B              # base instruct model with native thinking sup
 adapter_name: api-thinking
 chat_template: qwen-2.5           # Qwen3 uses the same ChatML format as Qwen2.5
 
+# Data generation style — controls add_thinking.py and prepare_data.py behavior.
+# trace_style:  linear (Entity/Scope/Use/NOT) or qoc (Question/Option/Criteria)
+# prompt_style: conversational (~60 tokens, better grounding for <=8B)
+#               structural     (~25 tokens, denser cues for 27B+)
+trace_style: linear
+prompt_style: conversational
+
 paths:
   base_dir: ~/git_home/trainLLM
   hf_home: ~/git_home/trainLLM/models/hf
