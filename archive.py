@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import subprocess
@@ -101,7 +102,8 @@ def training_data_stats(adapter_name: str) -> dict | None:
     for name in ["training.jsonl", "holdout.jsonl"]:
         f = prepared / name
         if f.exists():
-            stats[name.split(".")[0]] = sum(1 for _ in open(f))
+            with open(f) as fh:
+                stats[name.split(".")[0]] = sum(1 for _ in fh)
     return stats if stats else None
 
 
@@ -205,7 +207,6 @@ def create_archive(
                     tar.add(filepath, arcname=str(rel))
 
         manifest_json = json.dumps(manifest, indent=2)
-        import io
         info = tarfile.TarInfo(name="manifest.json")
         data = manifest_json.encode()
         info.size = len(data)
@@ -234,9 +235,9 @@ def list_archives():
         mtime = datetime.fromtimestamp(tb.stat().st_mtime).strftime("%Y-%m-%d")
         print(f"  {tb.name:<58s}  {size_mb:>8.1f} MB  {mtime}")
 
-    print(f"\nTo inspect: tar tzf <archive> | head -20")
-    print(f"To extract: tar xzf <archive> -C /target/dir")
-    print(f"To read manifest: tar xzf <archive> manifest.json -O | python3 -m json.tool")
+    print("\nTo inspect: tar tzf <archive> | head -20")
+    print("To extract: tar xzf <archive> -C /target/dir")
+    print("To read manifest: tar xzf <archive> manifest.json -O | python3 -m json.tool")
 
 
 def main():

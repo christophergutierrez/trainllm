@@ -125,10 +125,10 @@ def main():
             if d.name not in archived_adapters:
                 unarchived.append(d.name)
         if unarchived:
-            print(f"WARNING: These adapters are NOT in the archive and would be lost:", file=sys.stderr)
+            print("WARNING: These adapters are NOT in the archive and would be lost:", file=sys.stderr)
             for name in unarchived:
                 print(f"  {name}", file=sys.stderr)
-            print(f"\nRun archive.py first, or use --skip-archive-check to proceed anyway.", file=sys.stderr)
+            print("\nRun archive.py first, or use --skip-archive-check to proceed anyway.", file=sys.stderr)
             sys.exit(1)
 
     # Print summary
@@ -184,7 +184,8 @@ def main():
         (d / ".gitkeep").touch()
 
     print(f"\nCleanup complete. Freed ~{total_mb / 1024:.1f} GB.")
-    print(f"Archive is at: {archive}")
+    if archive:
+        print(f"Archive is at: {archive}")
 
 
 if __name__ == "__main__":

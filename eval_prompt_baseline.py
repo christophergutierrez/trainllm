@@ -63,7 +63,7 @@ def query(record: dict) -> tuple[str, str, float, dict]:
 # ── Run ──
 
 with open(DATA) as _fh:
-    records = [json.loads(l) for l in _fh]
+    records = [json.loads(line) for line in _fh]
 timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 safe_model = MODEL.replace("/", "_")
 
@@ -149,19 +149,19 @@ with open(json_path, "w") as f:
 
 md_path = OUT_DIR / f"{timestamp}_prompt_baseline_{safe_model}.md"
 with open(md_path, "w") as f:
-    f.write(f"# Prompt-Engineered Baseline Eval\n\n")
+    f.write("# Prompt-Engineered Baseline Eval\n\n")
     f.write(f"**Date:** {timestamp}  \n")
     f.write(f"**Model:** `{MODEL}` (base, no adapter)  \n")
     f.write(f"**System prompt source:** `{PROMPT_YAML.name}` ({len(SYSTEM_PROMPT)} chars)  \n")
     f.write(f"**Holdout:** `{DATA}` ({len(records)} records)  \n\n")
-    f.write(f"## Overall\n\n")
-    f.write(f"| Metric | Value |\n|---|---|\n")
+    f.write("## Overall\n\n")
+    f.write("| Metric | Value |\n|---|---|\n")
     f.write(f"| Average similarity | {avg:.3f} |\n")
     f.write(f"| Excellent (≥0.8) | {band_counts['EXCELLENT']}/{len(results)} |\n")
     f.write(f"| Good (0.6–0.8) | {band_counts['GOOD']}/{len(results)} |\n")
     f.write(f"| Partial (0.4–0.6) | {band_counts['PARTIAL']}/{len(results)} |\n")
     f.write(f"| Poor (<0.4) | {band_counts['POOR']}/{len(results)} |\n\n")
-    f.write(f"## Convention breakdown\n\n| convention | avg | n |\n|---|---|---|\n")
+    f.write("## Convention breakdown\n\n| convention | avg | n |\n|---|---|---|\n")
     for c in conv_summary:
         f.write(f"| `{c['convention']}` | {c['avg']:.3f} | {c['n']} |\n")
 
