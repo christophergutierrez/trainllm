@@ -9,10 +9,8 @@ data/*
 !data/.gitkeep
 logs/*
 !logs/.gitkeep
-lora/*
-!lora/.gitkeep
-evals/*
-!evals/.gitkeep
+lora/
+evals/
 
 # Large artifacts
 models/
