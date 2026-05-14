@@ -76,7 +76,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=str(SFT_DIR),
     max_seq_length=cfg.training.max_seq_length,
     dtype=None,
-    load_in_4bit=True,
+    load_in_4bit=cfg.training.load_in_4bit,
     device_map={"": torch.cuda.current_device()},
 )
 
@@ -102,13 +102,7 @@ from prepare_data import DEFAULT_ORG, build_system_prompt  # noqa: E402
 
 # Extends the SFT prompt with multi-step call format (the behavior DPO targets)
 ORG_NAME = os.environ.get("TRAINLLM_ORG", DEFAULT_ORG)
-SYSTEM_PROMPT = (
-    build_system_prompt(ORG_NAME) + " "
-    'For a single call use: {"endpoint": "GET /...", "params": {...}}. '
-    "For a two-step call (when an ID must be fetched first) use: "
-    '{"steps": [{"endpoint": "GET /...", "params": {}}, '
-    '{"endpoint": "GET /.../{id}", "params": {"id": "{{steps.0.fieldName}}"}}]}.'
-)
+SYSTEM_PROMPT = build_system_prompt(ORG_NAME)
 
 
 def format_response(api_call: dict) -> str:
