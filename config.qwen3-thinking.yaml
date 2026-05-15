@@ -61,10 +61,10 @@ training:
 
   warmup_steps: 50
 
-  # 3337 training records, effective batch=32 → ~104 steps/epoch.
-  # 15 epochs × 104 = 1560 steps. PlateauDetector will stop early if
+  # 5006 training records, effective batch=32 → ~156 steps/epoch.
+  # 15 epochs × 156 = 2340 steps. PlateauDetector will stop early if
   # loss plateaus, so this is a ceiling.
-  max_steps: 1560
+  max_steps: 2340
 
   learning_rate: 5.0e-5    # halved from 1e-4; more steps compensate
   weight_decay: 0.01
