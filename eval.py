@@ -127,7 +127,9 @@ with ThreadPoolExecutor(max_workers=EVAL_WORKERS) as pool:
 # ── Aggregate ──────────────────────────────────────────────────────────────────
 
 scores      = [r["score"] for r in results if r["band"] != "ERROR"]
+json_scores = [r["json_score"] for r in results if r["band"] != "ERROR" and "json_score" in r]
 avg         = sum(scores) / len(scores) if scores else 0.0
+json_avg    = sum(json_scores) / len(json_scores) if json_scores else 0.0
 band_counts: defaultdict[str, int] = defaultdict(int)
 for r in results:
     band_counts[r["band"]] += 1
@@ -166,6 +168,7 @@ with open(json_path, "w") as f:
         },
         "summary": {
             "avg_score":            round(avg, 4),
+            "json_avg_score":       round(json_avg, 4),
             "band_counts":          dict(band_counts),
             "convention_breakdown": conv_summary,
             "weak_conventions":     weak_conventions,
@@ -194,12 +197,20 @@ with open(md_path, "w") as f:
     w("| Metric | Value |")
     w("|--------|-------|")
     w(f"| Average similarity | {avg:.2f} |")
+    w(f"| JSON-only avg      | {json_avg:.2f} |")
     w(f"| Excellent (≥0.8) | {band_counts['EXCELLENT']}/{len(results)} |")
     w(f"| Good (0.6–0.8)   | {band_counts['GOOD']}/{len(results)} |")
     w(f"| Partial (0.4–0.6)| {band_counts['PARTIAL']}/{len(results)} |")
     w(f"| Poor (<0.4)      | {band_counts['POOR']}/{len(results)} |")
     w(f"| Errors           | {band_counts['ERROR']}/{len(results)} |")
     w()
+
+    if json_avg - avg > 0.03:
+        w(f"> **Diagnostic:** JSON-only avg ({json_avg:.2f}) is significantly higher than "
+          f"full-text avg ({avg:.2f}). This usually means the model's API calls are correct "
+          f"but the thinking traces differ from holdout expectations (format mismatch, not a "
+          f"capability issue).")
+        w()
 
     if conv_summary:
         w("## Convention Breakdown")
@@ -286,9 +297,11 @@ with open(md_path, "w") as f:
 
 print()
 print("=" * 60)
-print(f"Avg similarity: {avg:.2f}")
+print(f"Avg similarity: {avg:.2f}  (JSON-only: {json_avg:.2f})")
 print(f"Excellent: {band_counts['EXCELLENT']}  Good: {band_counts['GOOD']}  "
       f"Partial: {band_counts['PARTIAL']}  Poor: {band_counts['POOR']}")
+if json_avg - avg > 0.03:
+    print(f"\n⚠ JSON avg ({json_avg:.2f}) >> full avg ({avg:.2f}) — likely thinking-trace format mismatch, not a capability issue")
 print()
 print(f"Report: {md_path}")
 print(f"JSON:   {json_path}")

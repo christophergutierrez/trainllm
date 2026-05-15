@@ -25,8 +25,8 @@ chat_template: qwen-2.5           # Qwen3 uses the same ChatML format as Qwen2.5
 # trace_style:  linear (Entity/Scope/Use/NOT) or qoc (Question/Option/Criteria)
 # prompt_style: conversational (~60 tokens, better grounding for <=8B)
 #               structural     (~25 tokens, denser cues for 27B+)
-trace_style: qoc
-prompt_style: qoc
+trace_style: linear
+prompt_style: conversational
 
 paths:
   base_dir: ~/git_home/trainLLM
@@ -61,10 +61,10 @@ training:
 
   warmup_steps: 50
 
-  # 3068 training records, effective batch=32 → ~96 steps/epoch.
-  # 15 epochs × 96 = 1440 steps. More epochs + lower LR = smoother
-  # convergence without overshooting.
-  max_steps: 1440
+  # 3337 training records, effective batch=32 → ~104 steps/epoch.
+  # 15 epochs × 104 = 1560 steps. PlateauDetector will stop early if
+  # loss plateaus, so this is a ceiling.
+  max_steps: 1560
 
   learning_rate: 5.0e-5    # halved from 1e-4; more steps compensate
   weight_decay: 0.01

@@ -208,6 +208,174 @@ def convert_to_qoc(thinking: str) -> str:
     return _qoc_simple(kv)
 
 
+def _parse_qoc(thinking: str) -> dict:
+    """Parse a QOC thinking trace into structured fields."""
+    lines = [l.strip() for l in thinking.strip().split("\n") if l.strip()]
+    question = ""
+    options: list[tuple[str, str]] = []  # (label_or_empty, endpoint_text)
+    criteria = ""
+    params = ""
+
+    for line in lines:
+        if line.startswith("Question:"):
+            question = line[len("Question:"):].strip()
+        elif re.match(r"Option\s*[A-Z]?:", line):
+            m = re.match(r"Option\s*([A-Z])?:\s*(.*)", line)
+            if m:
+                options.append((m.group(1) or "", m.group(2).strip()))
+        elif line.startswith("Criteria:"):
+            criteria = line[len("Criteria:"):].strip()
+        elif line.startswith("Params:"):
+            params = line[len("Params:"):].strip()
+
+    return {"question": question, "options": options, "criteria": criteria, "params": params}
+
+
+def _linear_from_synonym(qoc: dict) -> str:
+    m = re.search(r'"([^"]+)"', qoc["question"])
+    entity = m.group(1) if m else "resource"
+    out = [f"Entity: {entity}"]
+
+    options = qoc["options"]
+    use_ep = options[0][1] if options else "?"
+    not_eps = options[1:]
+
+    rejection = {}
+    for rm in re.finditer(r"Option ([A-Z]) rejected\s*—?\s*([^.]*)", qoc["criteria"]):
+        rejection[rm.group(1)] = rm.group(2).strip().rstrip(".")
+
+    crit = re.sub(r"\s*Option [A-Z] rejected\s*—?\s*[^.]*\.?\s*", " ", qoc["criteria"]).strip()
+
+    sentences = [s.strip() for s in crit.split(".") if s.strip()]
+    domain_parts, scope_parts, extras = [], [], []
+    found_scope = False
+    for s in sentences:
+        sl = s.lower()
+        if not found_scope and ("list all" in sl or "single item" in sl):
+            scope_parts.append(s)
+            found_scope = True
+        elif found_scope:
+            extras.append(s)
+        else:
+            domain_parts.append(s)
+
+    if domain_parts:
+        out.append(f"Domain: {'. '.join(domain_parts)}.")
+    for e in extras:
+        el = e.lower()
+        if "not a query parameter" in el or "do not add" in el:
+            out.append(f"Descriptor: {e}.")
+        elif "does not" in el and "filter" in el:
+            out.append(f"No filter: {e}.")
+        elif "'my" in el or "my " in el and "filter" in el:
+            out.append(f"Possession note: {e}.")
+        else:
+            out.append(e)
+    if scope_parts:
+        out.append(f"Scope: {'. '.join(scope_parts)}")
+
+    out.append(f"Use:    {use_ep}")
+    for label, ep in not_eps:
+        reason = rejection.get(label, "")
+        out.append(f"NOT:    {ep} ({reason})" if reason else f"NOT:    {ep}")
+
+    if qoc["params"]:
+        out.append(f"Params: {qoc['params']}")
+    return "\n".join(out)
+
+
+def _linear_from_byid(qoc: dict) -> str:
+    m = re.match(r"Retrieve one (\w+)", qoc["question"])
+    entity = m.group(1) if m else "resource"
+    out = [f"Entity: {entity}"]
+
+    options = qoc["options"]
+    use_ep = options[0][1] if options else "?"
+    not_eps = options[1:]
+
+    rejection = {}
+    for rm in re.finditer(r"Option ([A-Z]) rejected\s*—?\s*([^.]*)", qoc["criteria"]):
+        rejection[rm.group(1)] = rm.group(2).strip().rstrip(".")
+
+    crit = re.sub(r"\s*Option [A-Z] rejected\s*—?\s*[^.]*\.?\s*", " ", qoc["criteria"]).strip()
+
+    sentences = [s.strip() for s in crit.split(".") if s.strip()]
+    if sentences:
+        out.append(f"Scope: {sentences[0]}")
+    for s in sentences[1:]:
+        out.append(s)
+
+    out.append(f"Use:    {use_ep}")
+    for label, ep in not_eps:
+        reason = rejection.get(label, "")
+        out.append(f"NOT:    {ep} ({reason})" if reason else f"NOT:    {ep}")
+
+    if qoc["params"]:
+        out.append(f"Params: {qoc['params']}")
+    return "\n".join(out)
+
+
+def _linear_from_simple(qoc: dict) -> str:
+    m = re.match(r"Query (.+?)\?", qoc["question"])
+    entity = m.group(1) if m else "resource"
+    out = [f"Entity: {entity}"]
+
+    use_ep = qoc["options"][0][1] if qoc["options"] else "?"
+
+    if qoc["criteria"]:
+        crit = qoc["criteria"].rstrip(".")
+        if ":" in crit.split(".")[0]:
+            out.append(crit)
+        else:
+            out.append(f"Scope: {crit}")
+
+    out.append(f"Endpoint: {use_ep}")
+
+    if qoc["params"]:
+        out.append(f"Params: {qoc['params']}")
+    return "\n".join(out)
+
+
+def _linear_from_chain(qoc: dict) -> str:
+    options = qoc["options"]
+    s1_ep = re.search(r"(GET \S+)", options[0][1]).group(1) if options else "?"
+    chain_m = re.search(r"Chain\s*—?\s*(GET \S+)\s*→\s*(GET \S+)", options[1][1]) if len(options) > 1 else None
+    s0_ep = chain_m.group(1) if chain_m else "?"
+    field_m = re.search(r"\{\{(steps\.0\.\w+)\}\}", qoc["params"])
+    field = field_m.group(1) if field_m else "steps.0.id"
+
+    out = [
+        f"Goal: get a single item but no ID was given",
+        f"Two-step chain: yes",
+        f"Step 0: {s0_ep} → scan list",
+        f"Step 1: {s1_ep.replace('{', '{{').replace('}', '}}')} → use {{{{{field}}}}}",
+    ]
+    crit = re.sub(r"\s*Option [A-Z] rejected\s*—?\s*[^.]*\.?\s*", " ", qoc["criteria"]).strip()
+    extras = [s.strip() for s in crit.split(".") if s.strip()
+              and "no id provided" not in s.lower()
+              and "must resolve" not in s.lower()]
+    for e in extras:
+        out.append(e)
+    return "\n".join(out)
+
+
+def convert_to_linear(thinking: str) -> str:
+    """Convert a QOC thinking trace back to linear format."""
+    if not thinking:
+        return thinking
+    if "Question:" not in thinking:
+        return thinking
+    qoc = _parse_qoc(thinking)
+    q = qoc["question"]
+    if "Direct call or chain" in q:
+        return _linear_from_chain(qoc)
+    if "Which endpoint" in q:
+        return _linear_from_synonym(qoc)
+    if "Retrieve one" in q:
+        return _linear_from_byid(qoc)
+    return _linear_from_simple(qoc)
+
+
 def build_system_prompt(org_name: str, style: str = "conversational") -> str:
     org_label = org_name.strip() or DEFAULT_ORG
     if style == "structural":
@@ -418,15 +586,22 @@ def main():
                     for msg in r.get("messages", []):
                         if msg["role"] == "system":
                             msg["content"] = system_prompt
-                        if msg["role"] == "assistant" and trace_style == "qoc" and "<think>" in msg["content"]:
+                        if msg["role"] == "assistant" and "<think>" in msg["content"]:
                             m = re.search(r"<think>\n(.*?)\n</think>", msg["content"], re.DOTALL)
                             if m:
                                 old_think = m.group(1)
-                                new_think = convert_to_qoc(old_think)
-                                msg["content"] = msg["content"].replace(
-                                    f"<think>\n{old_think}\n</think>",
-                                    f"<think>\n{new_think}\n</think>",
-                                )
+                                is_qoc = "Question:" in old_think and "Option" in old_think
+                                if trace_style == "qoc" and not is_qoc:
+                                    new_think = convert_to_qoc(old_think)
+                                elif trace_style == "linear" and is_qoc:
+                                    new_think = convert_to_linear(old_think)
+                                else:
+                                    new_think = None
+                                if new_think is not None:
+                                    msg["content"] = msg["content"].replace(
+                                        f"<think>\n{old_think}\n</think>",
+                                        f"<think>\n{new_think}\n</think>",
+                                    )
                     preserved.append(json.dumps(r))
 
         ep_counters: dict[str, int] = {}
@@ -438,7 +613,29 @@ def main():
                 ep_counters[ep] = idx + 1
                 f.write(json.dumps(to_holdout(record, ep, idx, system_prompt, trace_style)) + "\n")
         kept = len(preserved)
-        print(f"  Holdout:   {len(holdout_items)} generated + {kept} preserved → {len(holdout_items)+kept} total → {out}")
+        total_holdout = len(holdout_items) + kept
+        print(f"  Holdout:   {len(holdout_items)} generated + {kept} preserved → {total_holdout} total → {out}")
+
+        # Format consistency check
+        n_qoc = n_linear = n_other = 0
+        for line in out.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            for msg in r.get("messages", []):
+                if msg.get("role") == "assistant" and "<think>" in msg.get("content", ""):
+                    if "Question:" in msg["content"] and "Option" in msg["content"]:
+                        n_qoc += 1
+                    elif "Entity:" in msg["content"] or "Scope:" in msg["content"]:
+                        n_linear += 1
+                    else:
+                        n_other += 1
+        if n_qoc > 0 and n_linear > 0:
+            print(f"  ⚠ WARNING: Mixed trace formats in holdout — {n_qoc} QOC + {n_linear} linear + {n_other} other")
+            print(f"    This will cause false regressions in eval. Fix with trace_style={trace_style}.")
+        else:
+            fmt = "QOC" if n_qoc > n_linear else "linear"
+            print(f"  Trace format: {fmt} ({n_qoc + n_linear + n_other}/{total_holdout} records checked)")
 
 
 if __name__ == "__main__":

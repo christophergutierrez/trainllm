@@ -26,7 +26,27 @@ def strip_fences(text: str) -> str:
     return text.strip()
 
 
+def extract_json_block(text: str) -> str:
+    """Extract the JSON code block, ignoring thinking traces."""
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def json_similarity(a: str, b: str) -> float:
+    """Score only the JSON block, ignoring thinking traces."""
+    ja = extract_json_block(a)
+    jb = extract_json_block(b)
+    if not ja and not jb:
+        return 1.0
+    if not ja or not jb:
+        return 0.0
+    return SequenceMatcher(None, ja, jb).ratio()
+
+
 def diagnostics(generated: str, expected: str) -> dict[str, float]:
     gen = strip_fences(generated)
     exp = strip_fences(expected)
-    return {"length_ratio": round(len(gen) / max(len(exp), 1), 2)}
+    return {
+        "length_ratio": round(len(gen) / max(len(exp), 1), 2),
+        "json_score": round(json_similarity(generated, expected), 4),
+    }
