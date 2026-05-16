@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _config
-from _eval_utils import THRESHOLDS, band, similarity, diagnostics
+from _eval_utils import THRESHOLDS, band, similarity, diagnostics, structural_score, composite_score
 
 
 def query(client, model: str, record: dict) -> tuple[str, str, float, dict]:
@@ -58,13 +58,17 @@ def _eval_one(client, model: str, i: int, r: dict) -> dict:
     label = r.get("label", rid)
     try:
         generated, expected, score, diag = query(client, model, r)
-        b = band(score)
+        struct = structural_score(expected, generated)
+        comp = composite_score(score, struct)
+        b = band(comp)
         return {
             "id":                 rid,
             "label":              label,
             "source_file":        r.get("source_file", ""),
             "conventions_tested": r.get("conventions_tested", []),
             "score":              round(score, 4),
+            "structural_score":   round(struct, 4),
+            "composite_score":    round(comp, 4),
             "band":               b,
             "prompt":             next((m["content"] for m in r["messages"] if m["role"] == "user"), ""),
             "expected":           expected,
@@ -135,10 +139,14 @@ def main() -> None:
 
     # ── Aggregate ──────────────────────────────────────────────────────────────
 
-    scores      = [r["score"] for r in results if r["band"] != "ERROR"]
-    json_scores = [r["json_score"] for r in results if r["band"] != "ERROR" and "json_score" in r]
-    avg         = sum(scores) / len(scores) if scores else 0.0
-    json_avg    = sum(json_scores) / len(json_scores) if json_scores else 0.0
+    scores        = [r["score"] for r in results if r["band"] != "ERROR"]
+    struct_scores = [r.get("structural_score", 0.0) for r in results if r["band"] != "ERROR"]
+    comp_scores   = [r.get("composite_score", 0.0) for r in results if r["band"] != "ERROR"]
+    json_scores   = [r["json_score"] for r in results if r["band"] != "ERROR" and "json_score" in r]
+    avg           = sum(scores) / len(scores) if scores else 0.0
+    struct_avg    = sum(struct_scores) / len(struct_scores) if struct_scores else 0.0
+    comp_avg      = sum(comp_scores) / len(comp_scores) if comp_scores else 0.0
+    json_avg      = sum(json_scores) / len(json_scores) if json_scores else 0.0
     band_counts: defaultdict[str, int] = defaultdict(int)
     for r in results:
         band_counts[r["band"]] += 1
@@ -146,7 +154,7 @@ def main() -> None:
     conv_scores = defaultdict(list)
     for r in results:
         for c in r["conventions_tested"]:
-            conv_scores[c].append(r["score"])
+            conv_scores[c].append(r.get("composite_score", r["score"]))
 
     conv_summary = sorted(
         [{"convention": c, "avg": round(sum(v) / len(v), 3), "n": len(v), "scores": v}
@@ -175,11 +183,13 @@ def main() -> None:
                 "lora_path":    str(cfg.final_dir) if MODEL == cfg.adapter_name else None,
             },
             "summary": {
-                "avg_score":            round(avg, 4),
-                "json_avg_score":       round(json_avg, 4),
-                "band_counts":          dict(band_counts),
-                "convention_breakdown": conv_summary,
-                "weak_conventions":     weak_conventions,
+                "avg_score":              round(avg, 4),
+                "avg_structural_score":   round(struct_avg, 4),
+                "avg_composite_score":    round(comp_avg, 4),
+                "json_avg_score":         round(json_avg, 4),
+                "band_counts":            dict(band_counts),
+                "convention_breakdown":   conv_summary,
+                "weak_conventions":       weak_conventions,
             },
             "results": results,
         }, f, indent=2)
@@ -203,8 +213,10 @@ def main() -> None:
         w()
         w("| Metric | Value |")
         w("|--------|-------|")
-        w(f"| Average similarity | {avg:.2f} |")
-        w(f"| JSON-only avg      | {json_avg:.2f} |")
+        w(f"| Average similarity  | {avg:.2f} |")
+        w(f"| Average structural  | {struct_avg:.2f} |")
+        w(f"| Average composite   | {comp_avg:.2f} |")
+        w(f"| JSON-only avg       | {json_avg:.2f} |")
         w(f"| Excellent (≥0.8) | {band_counts['EXCELLENT']}/{len(results)} |")
         w(f"| Good (0.6–0.8)   | {band_counts['GOOD']}/{len(results)} |")
         w(f"| Partial (0.4–0.6)| {band_counts['PARTIAL']}/{len(results)} |")
@@ -304,7 +316,7 @@ def main() -> None:
 
     print()
     print("=" * 60)
-    print(f"Avg similarity: {avg:.2f}  (JSON-only: {json_avg:.2f})")
+    print(f"Avg similarity: {avg:.2f}  structural: {struct_avg:.2f}  composite: {comp_avg:.2f}  (JSON-only: {json_avg:.2f})")
     print(f"Excellent: {band_counts['EXCELLENT']}  Good: {band_counts['GOOD']}  "
           f"Partial: {band_counts['PARTIAL']}  Poor: {band_counts['POOR']}")
     if json_avg - avg > 0.03:

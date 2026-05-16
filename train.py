@@ -17,6 +17,7 @@ from unsloth.chat_templates import get_chat_template, standardize_sharegpt, trai
 from datasets import load_dataset  # noqa: E402
 from trl import SFTTrainer  # noqa: E402
 from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq  # noqa: E402
+from _callbacks import WSDDecayCallback  # noqa: E402
 
 
 class PlateauDetector(TrainerCallback):
@@ -83,6 +84,7 @@ class PlateauDetector(TrainerCallback):
         out.write_text(json.dumps(summary, indent=2) + "\n")
         print(f"Convergence stats: {out}")
 
+
 def main() -> None:
     MODEL_NAME = cfg.model
     DATA_PATH  = Path(os.environ.get("TRAIN_DATA",  str(cfg.train_data)))
@@ -139,7 +141,28 @@ def main() -> None:
     dataset = dataset.map(format_prompts, batched=True)
     print(f"Dataset size: {len(dataset)} records")
 
+    if cfg.training.eval_during_training:
+        split = dataset.train_test_split(test_size=0.05, seed=42)
+        train_dataset = split["train"]
+        eval_dataset  = split["test"]
+        print(f"Train split: {len(train_dataset)} | Eval split: {len(eval_dataset)}")
+    else:
+        train_dataset = dataset
+        eval_dataset  = None
+
     plateau = PlateauDetector(patience_steps=200, min_delta=0.002)
+
+    callbacks         = [plateau]
+    actual_lr_sched   = cfg.training.lr_scheduler
+    if cfg.training.lr_scheduler == "wsd":
+        actual_lr_sched = "constant_with_warmup"
+        wsd = WSDDecayCallback(
+            stable_ratio=cfg.training.wsd_stable_ratio,
+            min_lr_ratio=cfg.training.wsd_min_lr_ratio,
+        )
+        callbacks.append(wsd)
+        print(f"LR schedule:    wsd (stable={cfg.training.wsd_stable_ratio}, "
+              f"min_lr={cfg.training.wsd_min_lr_ratio})")
 
     neftune_alpha = cfg.training.neftune_noise_alpha
     if neftune_alpha and neftune_alpha > 0:
@@ -148,12 +171,13 @@ def main() -> None:
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         dataset_text_field="text",
         max_seq_length=cfg.training.max_seq_length,
         data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
         dataset_kwargs={"skip_prepare_dataset": True},
-        callbacks=[plateau],
+        callbacks=callbacks,
         neftune_noise_alpha=neftune_alpha if neftune_alpha and neftune_alpha > 0 else None,
         args=TrainingArguments(
             per_device_train_batch_size=cfg.training.batch_size,
@@ -165,11 +189,13 @@ def main() -> None:
             logging_steps=10,
             optim="adamw_torch",        # adamw_8bit broken on CUDA 13
             weight_decay=cfg.training.weight_decay,
-            lr_scheduler_type=cfg.training.lr_scheduler,
+            lr_scheduler_type=actual_lr_sched,
             seed=42,
             output_dir=str(OUTPUT_DIR),
             save_steps=cfg.training.save_steps,
             save_total_limit=cfg.training.save_total_limit,
+            eval_strategy="steps" if eval_dataset is not None else "no",
+            eval_steps=cfg.training.save_steps if eval_dataset is not None else None,
         ),
     )
 

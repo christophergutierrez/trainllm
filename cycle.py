@@ -1099,7 +1099,7 @@ def step_select_best_checkpoint() -> Path | None:
         data = _load_eval(eval_path)
         if not data:
             continue
-        score = data["summary"]["avg_score"]
+        score = data["summary"].get("avg_composite_score") or data["summary"]["avg_score"]
         log(f"  {label:18s} ({model_name}): avg {score:.4f}")
         scored.append((model_name, ckpt_path, score, eval_path))
 
@@ -1147,6 +1147,25 @@ def step_emit_synth_status(ft_path: Path | None) -> Path | None:
         return None
     log(f"synth_status: {out_path}")
     return out_path
+
+
+# ── Step 5c: LLM judge ────────────────────────────────────────────────────────
+
+def step_llm_judge(ft_path: Path | None, args: argparse.Namespace) -> None:
+    if not ft_path or args.skip_judge:
+        return
+    log_section("STEP 5c: LLM judge")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(cfg.base_dir / "llm_judge.py"), str(ft_path)],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode == 0:
+            log("LLM judge: complete")
+        else:
+            log(f"LLM judge: non-zero exit ({result.returncode})", "WARN")
+    except Exception as e:
+        log(f"LLM judge: skipped ({e})", "WARN")
 
 
 # ── Step 6: Report ────────────────────────────────────────────────────────────
@@ -1200,12 +1219,20 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
         r(f"  Best loss: {convergence.get('best_loss', '?')} at step {convergence.get('best_step', '?')}")
 
     if ft_data and base_data:
-        ft_avg   = ft_data["summary"]["avg_score"]
-        base_avg = base_data["summary"]["avg_score"]
+        ft_avg   = ft_data["summary"].get("avg_composite_score") or ft_data["summary"]["avg_score"]
+        base_avg = base_data["summary"].get("avg_composite_score") or base_data["summary"]["avg_score"]
         delta    = ft_avg - base_avg
         r()
-        r(f"  Fine-tuned ({LORA_MODEL}):  {_score_bar(ft_avg)}")
-        r(f"  Base model ({BASE_MODEL}):  {_score_bar(base_avg)}")
+        r(f"  Fine-tuned ({LORA_MODEL}):")
+        r(f"    composite {_score_bar(ft_avg)}"
+          + (f"  sim={ft_data['summary']['avg_score']:.2f}"
+             f"  struct={ft_data['summary'].get('avg_structural_score', 0.0):.2f}"
+             if "avg_structural_score" in ft_data["summary"] else ""))
+        r(f"  Base model ({BASE_MODEL}):")
+        r(f"    composite {_score_bar(base_avg)}"
+          + (f"  sim={base_data['summary']['avg_score']:.2f}"
+             f"  struct={base_data['summary'].get('avg_structural_score', 0.0):.2f}"
+             if "avg_structural_score" in base_data["summary"] else ""))
         r()
         if delta > 0.05:
             r(f"  Fine-tuning is helping:  +{delta:.2f} above base")
@@ -1217,11 +1244,13 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
             r("  Consider: more training data, higher LoRA rank, different base model")
     elif ft_data:
         r()
-        r(f"  Fine-tuned ({LORA_MODEL}):  {_score_bar(ft_data['summary']['avg_score'])}")
+        ft_avg = ft_data["summary"].get("avg_composite_score") or ft_data["summary"]["avg_score"]
+        r(f"  Fine-tuned ({LORA_MODEL}):  {_score_bar(ft_avg)}")
         r("  (No base model run for comparison)")
     elif base_data:
         r()
-        r(f"  Base model ({BASE_MODEL}):  {_score_bar(base_data['summary']['avg_score'])}")
+        base_avg = base_data["summary"].get("avg_composite_score") or base_data["summary"]["avg_score"]
+        r(f"  Base model ({BASE_MODEL}):  {_score_bar(base_avg)}")
         r("  (No fine-tuned model run for comparison)")
 
     for label, data in [("Fine-tuned", ft_data), ("Base", base_data)]:
@@ -1257,8 +1286,10 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
         prev_path = find_prev_eval(LORA_MODEL)
         prev_data = _load_eval(prev_path) if prev_path else None
         if prev_data:
-            prev_avg = prev_data["summary"]["avg_score"]
-            curr_avg = ft_data["summary"]["avg_score"]
+            prev_avg = (prev_data["summary"].get("avg_composite_score")
+                        or prev_data["summary"]["avg_score"])
+            curr_avg = (ft_data["summary"].get("avg_composite_score")
+                        or ft_data["summary"]["avg_score"])
             delta_vs_prev = curr_avg - prev_avg
             arrow = "▲" if delta_vs_prev > 0 else ("▼" if delta_vs_prev < 0 else "─")
             r()
@@ -1310,8 +1341,8 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
     r()
     r("  DIAGNOSIS:")
     if ft_data and base_data:
-        ft_avg   = ft_data["summary"]["avg_score"]
-        base_avg = base_data["summary"]["avg_score"]
+        ft_avg   = ft_data["summary"].get("avg_composite_score") or ft_data["summary"]["avg_score"]
+        base_avg = base_data["summary"].get("avg_composite_score") or base_data["summary"]["avg_score"]
         delta    = ft_avg - base_avg
         if ft_avg < base_avg - 0.05:
             r("  → Fine-tuning is HURTING the model.")
@@ -1329,7 +1360,7 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
         else:
             r("  → Good scores. Validate on real tasks.")
     elif ft_data:
-        ft_avg = ft_data["summary"]["avg_score"]
+        ft_avg = ft_data["summary"].get("avg_composite_score") or ft_data["summary"]["avg_score"]
         if ft_avg < 0.35:
             r("  → Scores are low. Check max_steps and add data for weak conventions.")
         elif ft_avg < 0.6:
@@ -1337,8 +1368,11 @@ def step_report(ft_path: Path | None, base_path: Path | None, status_path: Path 
         else:
             r("  → Good scores. Validate on real tasks.")
 
-    if ft_data and ft_data["summary"]["avg_score"] >= 0.8:
-        r("  → Holdout scores strong. Next step: real task evaluation.")
+    if ft_data:
+        ft_avg_for_strong = (ft_data["summary"].get("avg_composite_score")
+                             or ft_data["summary"]["avg_score"])
+        if ft_avg_for_strong >= 0.8:
+            r("  → Holdout scores strong. Next step: real task evaluation.")
 
     r()
     r("  Eval reports:")
@@ -1387,6 +1421,8 @@ def parse_args() -> argparse.Namespace:
                    help="Override holdout file path for eval.")
     p.add_argument("--keep-server", action="store_true",
                    help="Leave a vLLM server started by this cycle running after completion.")
+    p.add_argument("--skip-judge", action="store_true",
+                   help="Skip LLM judge step after evaluation (requires ANTHROPIC_API_KEY).")
     p.add_argument("--merge", action="store_true",
                    help="After training, run DARE-TIES merge and evaluate the merged model.")
     p.add_argument("--merge-only", action="store_true",
@@ -1513,6 +1549,7 @@ def main() -> None:
                         log(f"Base eval completed in {_elapsed(t0)}")
 
                 status_path = step_emit_synth_status(ft_path)
+                step_llm_judge(ft_path, args)
 
             step_report(ft_path, base_path, status_path)
 
@@ -1568,6 +1605,7 @@ def main() -> None:
                         log(f"Base eval completed in {_elapsed(t0)}")
 
                 status_path = step_emit_synth_status(ft_path)
+                step_llm_judge(ft_path, args)
 
             step_report(ft_path, base_path, status_path)
 

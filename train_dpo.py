@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-DPO fine-tuning pass on top of a trained SFT adapter.
+SimPO fine-tuning pass on top of a trained SFT adapter.
 
-Loads the SFT adapter from lora_dir/final, runs DPOTrainer to push the model
-toward chosen completions and away from rejected ones, and saves the result
-to lora_dir/dpo_final.
+Loads the SFT adapter from lora_dir/final, runs CPOTrainer (SimPO mode) to push
+the model toward chosen completions and away from rejected ones, and saves the
+result to lora_dir/dpo_final.
+
+SimPO (Simple Preference Optimization) uses a length-normalized reward and a
+margin term (simpo_gamma) instead of a reference model, which makes it more
+memory-efficient than DPO and better-suited to small LoRA adapters.
 
 Typical use: kill a strong chaining prior that SFT alone can't override.
 
@@ -16,16 +20,7 @@ Usage:
     TRAINLLM_CONFIG=config.acme.yaml DPO_DATA=.../dpo.jsonl python train_dpo.py
 
     # Override hyperparams
-    DPO_BETA=0.2 DPO_MAX_STEPS=80 DPO_LR=3e-5 DPO_DATA=.../dpo.jsonl python train_dpo.py
-
-Reference model note:
-    DPOTrainer is given ref_model=None. With a PEFT model this uses the
-    adapter-disabled forward pass as reference — i.e. the base model, not the
-    SFT adapter. For a focused correction (e.g. eliminating chained steps on
-    a handful of phrases) this is fine: the DPO signal is clear and beta keeps
-    the policy from drifting far. If you need the SFT adapter as reference,
-    increase GPU memory and pass an explicit ref_model loaded from the same
-    final_dir.
+    SIMPO_BETA=2.0 SIMPO_GAMMA=1.0 DPO_MAX_STEPS=80 DPO_LR=3e-5 DPO_DATA=.../dpo.jsonl python train_dpo.py
 """
 
 import gc
@@ -44,12 +39,10 @@ def main() -> None:
     os.environ["HF_HOME"] = str(cfg.hf_home)
 
     import torch
-    from unsloth import FastLanguageModel, PatchDPOTrainer
+    from unsloth import FastLanguageModel
     from unsloth.chat_templates import get_chat_template
     from datasets import Dataset
-    from trl import DPOTrainer, DPOConfig
-
-    PatchDPOTrainer()
+    from trl import CPOTrainer, CPOConfig
 
     # ── Hyperparams (env overrides for one-offs) ──────────────────────────────
 
@@ -57,16 +50,17 @@ def main() -> None:
     DPO_DATA  = Path(os.environ.get("DPO_DATA",     str(cfg.data_dir / "dpo.jsonl")))
     OUTPUT_DIR = cfg.lora_dir / "dpo_final"
 
-    BETA      = float(os.environ.get("DPO_BETA",      "0.3"))
-    MAX_STEPS = int(os.environ.get("DPO_MAX_STEPS",   "100"))
-    LR        = float(os.environ.get("DPO_LR",        "5e-5"))
-    BATCH     = int(os.environ.get("DPO_BATCH",       str(cfg.training.batch_size)))
-    GRAD_ACCUM = int(os.environ.get("DPO_GRAD_ACCUM", str(cfg.training.gradient_accumulation_steps)))
+    SIMPO_GAMMA = float(os.environ.get("SIMPO_GAMMA", "1.0"))
+    SIMPO_BETA  = float(os.environ.get("SIMPO_BETA",  "2.0"))
+    MAX_STEPS   = int(os.environ.get("DPO_MAX_STEPS",   "100"))
+    LR          = float(os.environ.get("DPO_LR",        "5e-5"))
+    BATCH       = int(os.environ.get("DPO_BATCH",       str(cfg.training.batch_size)))
+    GRAD_ACCUM  = int(os.environ.get("DPO_GRAD_ACCUM", str(cfg.training.gradient_accumulation_steps)))
 
     print(f"SFT adapter:   {SFT_DIR}")
-    print(f"DPO data:      {DPO_DATA}")
+    print(f"SimPO data:    {DPO_DATA}")
     print(f"Output dir:    {OUTPUT_DIR}")
-    print(f"Beta:          {BETA}  |  Max steps: {MAX_STEPS}  |  LR: {LR}")
+    print(f"Beta:          {SIMPO_BETA}  |  Gamma: {SIMPO_GAMMA}  |  Max steps: {MAX_STEPS}  |  LR: {LR}")
 
     if not DPO_DATA.exists():
         sys.exit(f"DPO data not found: {DPO_DATA}\nSet DPO_DATA env var to the correct path.")
@@ -146,13 +140,15 @@ def main() -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    trainer = DPOTrainer(
+    trainer = CPOTrainer(
         model=model,
-        ref_model=None,
         tokenizer=tokenizer,
         train_dataset=dataset,
-        args=DPOConfig(
-            beta=BETA,
+        args=CPOConfig(
+            loss_type="simpo",
+            cpo_alpha=0.0,
+            simpo_gamma=SIMPO_GAMMA,
+            beta=SIMPO_BETA,
             max_steps=MAX_STEPS,
             per_device_train_batch_size=BATCH,
             gradient_accumulation_steps=GRAD_ACCUM,
@@ -169,7 +165,7 @@ def main() -> None:
         ),
     )
 
-    print(f"\nStarting DPO training ({len(raw)} pairs, {MAX_STEPS} steps, beta={BETA})...")
+    print(f"\nStarting SimPO training ({len(raw)} pairs, {MAX_STEPS} steps, beta={SIMPO_BETA}, gamma={SIMPO_GAMMA})...")
     trainer.train()
 
     print("\nSaving DPO adapter...")

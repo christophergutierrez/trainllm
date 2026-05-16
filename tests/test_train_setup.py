@@ -88,3 +88,55 @@ class TestResponseOnlyMarkers:
         parts = template.split(self.CHATML_MARKERS["response_part"])
         assert len(parts) == 2
         assert "A<|im_end|>" in parts[1]
+
+
+class TestValidationSplit:
+    """Verify the 5% eval split logic used in train.py main()."""
+
+    class _MockDataset:
+        def __init__(self, n: int):
+            self._n = n
+
+        def train_test_split(self, test_size: float, seed: int):
+            n_test = max(1, int(self._n * test_size))
+            n_train = self._n - n_test
+            return {
+                "train": self.__class__(n_train),
+                "test":  self.__class__(n_test),
+            }
+
+        def __len__(self):
+            return self._n
+
+    def _apply_split(self, dataset, eval_during_training: bool):
+        if eval_during_training:
+            split = dataset.train_test_split(test_size=0.05, seed=42)
+            train_dataset = split["train"]
+            eval_dataset  = split["test"]
+        else:
+            train_dataset = dataset
+            eval_dataset  = None
+        return train_dataset, eval_dataset
+
+    def test_split_is_5_percent(self):
+        ds = self._MockDataset(200)
+        train, eval_ = self._apply_split(ds, eval_during_training=True)
+        assert len(train) + len(eval_) == 200
+        assert len(eval_) == 10  # 5% of 200
+
+    def test_no_split_when_disabled(self):
+        ds = self._MockDataset(100)
+        train, eval_ = self._apply_split(ds, eval_during_training=False)
+        assert train is ds
+        assert eval_ is None
+
+    def test_minimum_one_eval_record(self):
+        ds = self._MockDataset(5)
+        _, eval_ = self._apply_split(ds, eval_during_training=True)
+        assert len(eval_) >= 1
+
+    def test_split_preserves_total_count(self):
+        for n in [20, 100, 500]:
+            ds = self._MockDataset(n)
+            train, eval_ = self._apply_split(ds, eval_during_training=True)
+            assert len(train) + len(eval_) == n

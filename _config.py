@@ -13,6 +13,7 @@ _KNOWN_TRAINING_KEYS = {
     "save_steps", "save_total_limit", "load_in_4bit",
     "neftune_noise_alpha", "train_on_responses_only",
     "lora_init", "use_rslora",
+    "wsd_stable_ratio", "wsd_min_lr_ratio", "eval_during_training",
 }
 
 
@@ -35,6 +36,9 @@ _TRAINING_DEFAULTS: dict[str, tuple[type, object]] = {
     "train_on_responses_only":     (bool,  True),
     "lora_init":                   (str,   "gaussian"),
     "use_rslora":                  (bool,  True),
+    "wsd_stable_ratio":            (float, 0.7),
+    "wsd_min_lr_ratio":            (float, 0.1),
+    "eval_during_training":        (bool,  True),
 }
 
 
