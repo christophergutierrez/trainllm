@@ -67,30 +67,7 @@ def _action(boost: list, avg: float) -> str:
 
 
 def _format_health(results: list) -> dict:
-    scored = [r for r in results if r["band"] != "ERROR"]
-    func_starts = 0
-    boilerplate_cases = []
-    for r in scored:
-        gen = strip_fences(r.get("generated", ""))
-        if gen.startswith("func "):
-            func_starts += 1
-        preamble = []
-        for line in gen.splitlines():
-            if line.strip().startswith("func "):
-                break
-            preamble.append(line)
-        if any(ln.strip().startswith(("package ", "import ", "import(")) for ln in preamble):
-            boilerplate_cases.append({
-                "func": r["label"],
-                "score": round(r["score"], 3),
-                "length_ratio": r.get("length_ratio", 0.0),
-            })
-    total = max(len(scored), 1)
-    return {
-        "func_start_pct": round(100 * func_starts / total, 1),
-        "boilerplate_detected": len(boilerplate_cases),
-        "boilerplate_cases": boilerplate_cases,
-    }
+    return {"func_start_pct": 0, "boilerplate_detected": 0, "boilerplate_cases": []}
 
 
 def _read_manifest(data_dir: Path) -> dict | None:

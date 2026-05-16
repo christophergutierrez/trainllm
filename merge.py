@@ -109,8 +109,11 @@ print("  Saved unloaded model to {dest}")
         )
         if result.returncode != 0:
             print(result.stderr.decode(errors="replace"), file=sys.stderr)
+            print(f"  Script retained for debugging: {script_path}", file=sys.stderr)
             raise RuntimeError(f"merge_and_unload failed for {adapter_name}")
-    finally:
+    except Exception:
+        raise
+    else:
         os.unlink(script_path)
 
     return dest
@@ -204,8 +207,11 @@ print("Merge complete.")
         )
         if result.returncode != 0:
             print(result.stderr.decode(errors="replace"), file=sys.stderr)
+            print(f"  Script retained for debugging: {script_path}", file=sys.stderr)
             raise RuntimeError(f"mergekit failed (exit {result.returncode})")
-    finally:
+    except Exception:
+        raise
+    else:
         os.unlink(script_path)
 
     print(f"\n  Merged model saved to: {output_dir}")

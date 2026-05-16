@@ -338,7 +338,8 @@ def _linear_from_simple(qoc: dict) -> str:
 
 def _linear_from_chain(qoc: dict) -> str:
     options = qoc["options"]
-    s1_ep = re.search(r"(GET \S+)", options[0][1]).group(1) if options else "?"
+    s1_m = re.search(r"(GET \S+)", options[0][1]) if options else None
+    s1_ep = s1_m.group(1) if s1_m else "?"
     chain_m = re.search(r"Chain\s*—?\s*(GET \S+)\s*→\s*(GET \S+)", options[1][1]) if len(options) > 1 else None
     s0_ep = chain_m.group(1) if chain_m else "?"
     field_m = re.search(r"\{\{(steps\.0\.\w+)\}\}", qoc["params"])

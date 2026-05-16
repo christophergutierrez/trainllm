@@ -300,7 +300,7 @@ trainLLM/
 ├── emit_synth_status.py       # emit synth_status.yaml for reposynth handoff
 ├── endpoint_runner.py         # per-endpoint adapter automation
 ├── rubrics/                   # LLM judge rubric files (per codebase)
-│   └── acme.txt               # Go-specific rubric for the acme codebase
+│   └── acme.txt               # Domain-specific rubric for the acme API codebase
 ├── docs/
 │   └── architecture.md        # detailed design notes
 ├── data/                      # training and holdout JSONL files
