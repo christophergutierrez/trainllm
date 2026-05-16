@@ -148,69 +148,76 @@ def create_archive(
     print(f"  Base model: {cfg.model}")
     print(f"  Adapters: {len(adapter_dirs)}")
 
-    with tarfile.open(tarball_path, "w:gz") as tar:
-        for adapter_dir in adapter_dirs:
-            summary = adapter_summary(adapter_dir)
+    tmp_tarball = tarball_path.with_suffix(".tar.gz.tmp")
+    try:
+        with tarfile.open(tmp_tarball, "w:gz") as tar:
+            for adapter_dir in adapter_dirs:
+                summary = adapter_summary(adapter_dir)
 
-            eval_path = latest_eval_for(adapter_dir.name)
-            if eval_path:
-                summary["eval_file"] = eval_path.name
-                try:
-                    eval_data = json.loads(eval_path.read_text())
-                    summary["eval_avg_score"] = eval_data.get("summary", {}).get("avg_score")
-                    summary["eval_date"] = eval_data.get("timestamp")
-                except Exception:
-                    pass
-                tar.add(eval_path, arcname=f"evals/{eval_path.name}")
-                md_path = eval_path.with_suffix(".md")
-                if md_path.exists():
-                    tar.add(md_path, arcname=f"evals/{md_path.name}")
+                eval_path = latest_eval_for(adapter_dir.name)
+                if eval_path:
+                    summary["eval_file"] = eval_path.name
+                    try:
+                        eval_data = json.loads(eval_path.read_text())
+                        summary["eval_avg_score"] = eval_data.get("summary", {}).get("avg_score")
+                        summary["eval_date"] = eval_data.get("timestamp")
+                    except Exception:
+                        pass
+                    tar.add(eval_path, arcname=f"evals/{eval_path.name}")
+                    md_path = eval_path.with_suffix(".md")
+                    if md_path.exists():
+                        tar.add(md_path, arcname=f"evals/{md_path.name}")
 
-            run_config = find_run_config(adapter_dir.name)
-            if run_config:
-                summary["training_config"] = run_config.name
-                tar.add(run_config, arcname=f"configs/{adapter_dir.name}_config.yaml")
+                run_config = find_run_config(adapter_dir.name)
+                if run_config:
+                    summary["training_config"] = run_config.name
+                    tar.add(run_config, arcname=f"configs/{adapter_dir.name}_config.yaml")
 
-            data_stats = training_data_stats(adapter_dir.name)
-            if data_stats:
-                summary["data_stats"] = data_stats
+                data_stats = training_data_stats(adapter_dir.name)
+                if data_stats:
+                    summary["data_stats"] = data_stats
 
-            manifest["adapters"].append(summary)
+                manifest["adapters"].append(summary)
 
-            score_str = ""
-            if summary.get("eval_avg_score") is not None:
-                score_str = f"  score={summary['eval_avg_score']:.2f}"
-            data_str = ""
-            if data_stats:
-                data_str = f"  train={data_stats.get('training', '?')}"
-            print(f"    {summary['name']:30s}  {summary['total_mb']:>8.1f} MB"
-                  f"  {'(+DPO)' if summary['has_dpo'] else ''}{score_str}{data_str}")
+                score_str = ""
+                if summary.get("eval_avg_score") is not None:
+                    score_str = f"  score={summary['eval_avg_score']:.2f}"
+                data_str = ""
+                if data_stats:
+                    data_str = f"  train={data_stats.get('training', '?')}"
+                print(f"    {summary['name']:30s}  {summary['total_mb']:>8.1f} MB"
+                      f"  {'(+DPO)' if summary['has_dpo'] else ''}{score_str}{data_str}")
 
-            for root, dirs, files in os.walk(adapter_dir):
-                root_path = Path(root)
-                rel = root_path.relative_to(LORA_ROOT)
+                for root, dirs, files in os.walk(adapter_dir):
+                    root_path = Path(root)
+                    rel = root_path.relative_to(LORA_ROOT)
 
-                if not include_checkpoints and "checkpoint-" in str(rel):
-                    continue
+                    if not include_checkpoints and "checkpoint-" in str(rel):
+                        continue
 
-                for f in files:
-                    filepath = root_path / f
-                    arcname = f"lora/{rel}/{f}"
-                    tar.add(filepath, arcname=arcname)
+                    for f in files:
+                        filepath = root_path / f
+                        arcname = f"lora/{rel}/{f}"
+                        tar.add(filepath, arcname=arcname)
 
-        if include_merged and MERGED_ROOT.exists():
-            print(f"  Including merged models from {MERGED_ROOT}")
-            for root, dirs, files in os.walk(MERGED_ROOT):
-                for f in files:
-                    filepath = Path(root) / f
-                    rel = filepath.relative_to(cfg.base_dir)
-                    tar.add(filepath, arcname=str(rel))
+            if include_merged and MERGED_ROOT.exists():
+                print(f"  Including merged models from {MERGED_ROOT}")
+                for root, dirs, files in os.walk(MERGED_ROOT):
+                    for f in files:
+                        filepath = Path(root) / f
+                        rel = filepath.relative_to(cfg.base_dir)
+                        tar.add(filepath, arcname=str(rel))
 
-        manifest_json = json.dumps(manifest, indent=2)
-        info = tarfile.TarInfo(name="manifest.json")
-        data = manifest_json.encode()
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
+            manifest_json = json.dumps(manifest, indent=2)
+            info = tarfile.TarInfo(name="manifest.json")
+            data = manifest_json.encode()
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        tmp_tarball.rename(tarball_path)
+    except BaseException:
+        tmp_tarball.unlink(missing_ok=True)
+        raise
 
     size_mb = tarball_path.stat().st_size / 1_048_576
     print(f"\n  Archive size: {size_mb:.1f} MB")

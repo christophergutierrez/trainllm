@@ -14,6 +14,46 @@ _KNOWN_TRAINING_KEYS = {
 }
 
 
+_TRAINING_DEFAULTS: dict[str, tuple[type, object]] = {
+    "max_seq_length":              (int,   2048),
+    "lora_rank":                   (int,   16),
+    "lora_alpha":                  (int,   32),
+    "lora_dropout":                (float, 0),
+    "batch_size":                  (int,   2),
+    "gradient_accumulation_steps": (int,   4),
+    "warmup_steps":                (int,   50),
+    "max_steps":                   (int,   2000),
+    "learning_rate":               (float, 2e-4),
+    "weight_decay":                (float, 0.01),
+    "lr_scheduler":                (str,   "cosine"),
+    "save_steps":                  (int,   500),
+    "save_total_limit":            (None,  None),   # None type = int-or-None
+    "load_in_4bit":                (bool,  False),
+}
+
+
+def _parse_training(raw_training: dict) -> SimpleNamespace:
+    result = {}
+    for key, (typ, default) in _TRAINING_DEFAULTS.items():
+        val = raw_training.get(key, default)
+        if val is None:
+            result[key] = None
+        elif typ is None:
+            result[key] = int(val) if val is not None else None
+        elif typ is bool:
+            result[key] = bool(val)
+        elif typ is int:
+            result[key] = int(val)
+        elif typ is float:
+            result[key] = float(val)
+        else:
+            result[key] = str(val)
+    for key in raw_training:
+        if key not in _TRAINING_DEFAULTS:
+            result[key] = raw_training[key]
+    return SimpleNamespace(**result)
+
+
 def load(config_path: Path | None = None) -> SimpleNamespace:
     try:
         import yaml  # type: ignore[import-untyped]
@@ -93,7 +133,7 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
             train_data = exp(raw["data"]["train"]),
             holdout    = exp(raw["data"]["holdout"]),
 
-            training = SimpleNamespace(**raw["training"]),
+            training = _parse_training(raw.get("training", {})),
 
             merge = merge_cfg,
 

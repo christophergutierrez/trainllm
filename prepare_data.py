@@ -605,13 +605,15 @@ def main():
                     preserved.append(json.dumps(r))
 
         ep_counters: dict[str, int] = {}
-        with open(out, "w") as f:
+        tmp_out = out.with_suffix(".tmp")
+        with open(tmp_out, "w") as f:
             for line in preserved:
                 f.write(line + "\n")
             for ep, record in holdout_items:
                 idx = ep_counters.get(ep, 0)
                 ep_counters[ep] = idx + 1
                 f.write(json.dumps(to_holdout(record, ep, idx, system_prompt, trace_style)) + "\n")
+        os.replace(tmp_out, out)
         kept = len(preserved)
         total_holdout = len(holdout_items) + kept
         print(f"  Holdout:   {len(holdout_items)} generated + {kept} preserved → {total_holdout} total → {out}")

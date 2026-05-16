@@ -154,7 +154,7 @@ def write_config(
     config = {
         "model": model,
         "adapter_name": f"{dataset}-api-{endpoint}",
-        "chat_template": "qwen-2.5",
+        "chat_template": current.chat_template,
         "runtime": "vllm",
         "paths": {
             "base_dir": str(repo_root),
@@ -187,7 +187,7 @@ def write_config(
 
 
 def run_cycle(repo_root: Path, config_path: Path, max_steps: int, skip_base_eval: bool, keep_best_checkpoint: bool) -> int:
-    cmd = [sys.executable, "cycle.py", "--steps", str(max_steps)]
+    cmd = [sys.executable, str(repo_root / "cycle.py"), "--steps", str(max_steps)]
     if skip_base_eval:
         cmd.append("--skip-base-eval")
     if not keep_best_checkpoint:

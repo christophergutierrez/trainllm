@@ -917,9 +917,13 @@ def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | Non
 def stop_managed_vllm(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
-    log(f"Stopping managed vLLM process group {proc.pid}")
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    log(f"Stopping managed vLLM process group {pgid}")
+    try:
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
 
@@ -929,9 +933,9 @@ def stop_managed_vllm(proc: subprocess.Popen) -> None:
             return
         time.sleep(1)
 
-    log(f"vLLM process group {proc.pid} still alive — sending SIGKILL", "WARN")
+    log(f"vLLM process group {pgid} still alive — sending SIGKILL", "WARN")
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
 
@@ -1159,11 +1163,15 @@ def step_select_best_checkpoint() -> Path | None:
                 f"winner beats it by {winner_score - final_score:+.4f})")
         log(f"Promoting {winner_path} → {FINAL_DIR}")
         tmp = FINAL_DIR.with_suffix(".tmp_promote")
+        bak = FINAL_DIR.with_suffix(".bak_promote")
         if tmp.exists():
             shutil.rmtree(tmp)
         shutil.copytree(winner_path, tmp)
-        shutil.rmtree(FINAL_DIR)
+        if bak.exists():
+            shutil.rmtree(bak)
+        FINAL_DIR.rename(bak)
         tmp.rename(FINAL_DIR)
+        shutil.rmtree(bak)
         log("final/ now holds the winning checkpoint")
 
     return winner_eval

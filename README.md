@@ -108,7 +108,8 @@ timeouts:
 |----------|---------|--------|
 | `ANTHROPIC_API_KEY` | — | If set, uses the Anthropic SDK; otherwise shells out to `claude -p` |
 | `JUDGE_MODEL` | `claude-haiku-4-5-20251001` | Claude model for judging |
-| `JUDGE_CODEBASE` | `acme` | Substitutes the codebase name in the rubric |
+| `JUDGE_CODEBASE` | `acme` | Loads rubric from `rubrics/<name>.txt` if it exists; falls back to a generic rubric |
+| `JUDGE_RUBRIC` | — | Path to a custom rubric file (overrides `JUDGE_CODEBASE` lookup) |
 
 ## Data formats
 
@@ -297,6 +298,8 @@ trainLLM/
 ├── prepare_data.py            # convert endpoint data → ShareGPT + holdout splits
 ├── emit_synth_status.py       # emit synth_status.yaml for reposynth handoff
 ├── endpoint_runner.py         # per-endpoint adapter automation
+├── rubrics/                   # LLM judge rubric files (per codebase)
+│   └── acme.txt               # Go-specific rubric for the acme codebase
 ├── docs/
 │   └── architecture.md        # detailed design notes
 ├── data/                      # training and holdout JSONL files
@@ -435,7 +438,7 @@ Runs a Direct Preference Optimization pass on top of an existing SFT adapter. Us
 
 Rescores an existing eval JSON using Claude Haiku as a semantic judge. The similarity metric (`difflib.SequenceMatcher`) undercounts correct-but-differently-worded code; the judge metric measures correctness and convention adherence instead.
 
-**Note:** The rubric is hardcoded for Go/codebase-specific conventions (error wrapping, pagination patterns, HTTP auth format, etc.). `JUDGE_CODEBASE` substitutes only the codebase name placeholder — the Go-specific scoring criteria remain unchanged. For non-Go output, edit the `RUBRIC` string in `llm_judge.py` directly.
+The rubric is loaded from `rubrics/<JUDGE_CODEBASE>.txt` if the file exists. If not, a generic format-agnostic rubric is used. Set `JUDGE_RUBRIC=/path/to/rubric.txt` to use a fully custom rubric. The shipped `rubrics/acme.txt` contains Go-specific scoring criteria; for non-Go output (e.g., JSON API calls), either omit the rubric file or create a domain-specific one.
 
 ### `prepare_data.py` — API training data preparation
 
@@ -452,3 +455,6 @@ Emits `synth_status.yaml` from an eval JSON for the reposynth feedback loop. Cal
 ## See also
 
 - [Architecture](docs/architecture.md) — detailed design notes on the pipeline, training approach, and evaluation.
+- [Troubleshooting](docs/troubleshooting.md) — common failures and how to fix them.
+- [Data Preparation](docs/data-preparation.md) — end-to-end guide from raw endpoint data to training JSONL.
+- [DPO Fine-Tuning](docs/dpo.md) — when and how to use Direct Preference Optimization.
