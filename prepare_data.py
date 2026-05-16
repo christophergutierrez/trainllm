@@ -580,7 +580,8 @@ def main():
         preserved = []
         if out.exists():
             for line in out.read_text().splitlines():
-                if not line.strip(): continue
+                if not line.strip():
+                    continue
                 r = json.loads(line)
                 if any(r.get("id","").startswith(p) for p in ("canonical-","mcp-","mcp_")):
                     for msg in r.get("messages", []):

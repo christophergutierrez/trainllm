@@ -13,6 +13,7 @@ config.yaml
     ├── eval.py                    ← vLLM-based holdout evaluation
     ├── cycle.py                   ← orchestrator (backup → train → serve → eval → report)
     │
+    ├── _eval_utils.py              ← shared scoring functions (similarity, bands)
     ├── train_dpo.py               ← DPO fine-tuning on top of SFT adapter
     ├── llm_judge.py               ← LLM-as-judge rescoring with Claude Haiku
     ├── prepare_data.py            ← endpoint data → ShareGPT/holdout conversion
@@ -296,6 +297,6 @@ Because all paths derive from `config.yaml` and scripts locate `_config.py` via 
 
 **Different hyperparameters:** edit `training.*` in `config.yaml`.
 
-**Custom eval metric:** replace the `similarity()` function in `eval.py`. The rest of the scoring, reporting, and aggregation logic is metric-agnostic.
+**Custom eval metric:** replace the `similarity()` function in `_eval_utils.py`. The rest of the scoring, reporting, and aggregation logic is metric-agnostic.
 
 **Adding a pre/post-processing step:** add a function to `cycle.py` and call it in `main()` between the existing steps. The `WatchdogProcess` class handles any subprocess that writes to stdout.

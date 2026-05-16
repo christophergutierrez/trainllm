@@ -779,6 +779,81 @@ def _wait_for_free_gpu_memory(min_fraction: float, timeout_s: int = 120) -> None
     log("Timed out waiting for GPU memory recovery; attempting vLLM startup anyway", "WARN")
 
 
+def _launch_and_poll_vllm(
+    cmd: list[str],
+    label: str,
+    env: dict,
+    expect_model: str | None = None,
+) -> subprocess.Popen:
+    """Launch a vLLM process, stream its logs, and poll until /v1/models is ready."""
+    log(f"$ {shlex.join(cmd)}")
+    log(f"Startup timeout: {VLLM_STARTUP_TIMEOUT}s  (poll every {VLLM_POLL_INTERVAL}s)")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+        start_new_session=True,
+    )
+    log(f"vLLM PID: {proc.pid}")
+    pid_file = LOGS_DIR / f"vllm_{TIMESTAMP}.pid"
+    pid_file.write_text(str(proc.pid))
+
+    failed_event = threading.Event()
+
+    def stream_logs():
+        for line in proc.stdout:
+            log(f"  {line.rstrip()}", "VLLM")
+            if proc.poll() is not None:
+                failed_event.set()
+                break
+
+    threading.Thread(target=stream_logs, daemon=True).start()
+
+    start = time.time()
+    last_poll = 0.0
+
+    while True:
+        elapsed = time.time() - start
+
+        if elapsed > VLLM_STARTUP_TIMEOUT:
+            log(f"vLLM did not become ready within {VLLM_STARTUP_TIMEOUT}s — killing", "FATAL")
+            log("  Check: --enforce-eager set? nvidia-smi? HF model cache present?", "FATAL")
+            proc.kill()
+            pid_file.unlink(missing_ok=True)
+            die(f"vLLM startup timeout ({label})")
+
+        if failed_event.is_set() or proc.poll() is not None:
+            rc = proc.poll()
+            log(f"vLLM process exited unexpectedly with code {rc}", "FATAL")
+            pid_file.unlink(missing_ok=True)
+            die(f"vLLM exited during startup ({label}) — check log above")
+
+        if time.time() - last_poll >= VLLM_POLL_INTERVAL:
+            last_poll = time.time()
+            log(f"  Polling {VLLM_URL}/v1/models ... (elapsed {int(elapsed)}s)")
+            try:
+                with urllib.request.urlopen(f"{VLLM_URL}/v1/models", timeout=5) as resp:
+                    data = json.loads(resp.read())
+                    model_ids = [m["id"] for m in data.get("data", [])]
+                    log(f"  Server ready! Models: {model_ids}")
+                    if expect_model and expect_model not in model_ids:
+                        log(
+                            f"  WARNING: '{expect_model}' not in model list {model_ids}. "
+                            f"Check --lora-modules and that the adapter path exists.",
+                            "WARN",
+                        )
+                    pid_file.unlink(missing_ok=True)
+                    return proc
+            except Exception as exc:
+                log(f"  Not ready yet: {exc}")
+
+        time.sleep(5)
+
+
 def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | None:
     log_section("STEP 4: Start vLLM inference server")
 
@@ -846,72 +921,7 @@ def step_start_vllm(include_checkpoints: bool = False) -> subprocess.Popen | Non
         ]
     env = {**os.environ, "HF_HOME": HF_HOME}
 
-    log(f"$ {shlex.join(cmd)}")
-    log(f"Startup timeout: {VLLM_STARTUP_TIMEOUT}s  (poll every {VLLM_POLL_INTERVAL}s)")
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-        start_new_session=True,
-    )
-    log(f"vLLM PID: {proc.pid}")
-    pid_file = LOGS_DIR / f"vllm_{TIMESTAMP}.pid"
-    pid_file.write_text(str(proc.pid))
-
-    failed_event = threading.Event()
-
-    def stream_logs():
-        for line in proc.stdout:
-            log(f"  {line.rstrip()}", "VLLM")
-            if proc.poll() is not None:
-                failed_event.set()
-                break
-
-    threading.Thread(target=stream_logs, daemon=True).start()
-
-    start    = time.time()
-    last_poll = 0.0
-
-    while True:
-        elapsed = time.time() - start
-
-        if elapsed > VLLM_STARTUP_TIMEOUT:
-            log(f"vLLM did not become ready within {VLLM_STARTUP_TIMEOUT}s — killing", "FATAL")
-            log("  Check: --enforce-eager set? nvidia-smi? HF model cache present?", "FATAL")
-            proc.kill()
-            pid_file.unlink(missing_ok=True)
-            die("vLLM startup timeout")
-
-        if failed_event.is_set() or proc.poll() is not None:
-            rc = proc.poll()
-            log(f"vLLM process exited unexpectedly with code {rc}", "FATAL")
-            pid_file.unlink(missing_ok=True)
-            die("vLLM exited during startup — check log above")
-
-        if time.time() - last_poll >= VLLM_POLL_INTERVAL:
-            last_poll = time.time()
-            log(f"  Polling {VLLM_URL}/v1/models ... (elapsed {int(elapsed)}s)")
-            try:
-                with urllib.request.urlopen(f"{VLLM_URL}/v1/models", timeout=5) as resp:
-                    data      = json.loads(resp.read())
-                    model_ids = [m["id"] for m in data.get("data", [])]
-                    log(f"  Server ready! Models: {model_ids}")
-                    if LORA_MODEL not in model_ids:
-                        log(
-                            f"  WARNING: '{LORA_MODEL}' not in model list {model_ids}. "
-                            f"Check --lora-modules and that {FINAL_DIR} exists.",
-                            "WARN",
-                        )
-                    pid_file.unlink(missing_ok=True)
-                    return proc
-            except Exception as exc:
-                log(f"  Not ready yet: {exc}")
-
-        time.sleep(5)
+    return _launch_and_poll_vllm(cmd, "LoRA server", env, expect_model=LORA_MODEL)
 
 
 def stop_managed_vllm(proc: subprocess.Popen) -> None:
@@ -997,61 +1007,9 @@ def step_start_vllm_merged(model_path: Path) -> subprocess.Popen | None:
     ]
     env = {**os.environ, "HF_HOME": HF_HOME}
 
-    log(f"$ {shlex.join(cmd)}")
     log(f"Serving merged model as: {served_name}")
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-        start_new_session=True,
-    )
-    log(f"vLLM PID: {proc.pid}")
-    pid_file = LOGS_DIR / f"vllm_{TIMESTAMP}.pid"
-    pid_file.write_text(str(proc.pid))
-
-    failed_event = threading.Event()
-
-    def stream_logs():
-        for line in proc.stdout:
-            log(f"  {line.rstrip()}", "VLLM")
-            if proc.poll() is not None:
-                failed_event.set()
-                break
-
-    threading.Thread(target=stream_logs, daemon=True).start()
-
-    start = time.time()
-    last_poll = 0.0
-
-    while True:
-        elapsed = time.time() - start
-        if elapsed > VLLM_STARTUP_TIMEOUT:
-            proc.kill()
-            pid_file.unlink(missing_ok=True)
-            die("vLLM startup timeout (merged model)")
-
-        if failed_event.is_set() or proc.poll() is not None:
-            pid_file.unlink(missing_ok=True)
-            die("vLLM exited during startup (merged model)")
-
-        if time.time() - last_poll >= VLLM_POLL_INTERVAL:
-            last_poll = time.time()
-            log(f"  Polling {VLLM_URL}/v1/models ... (elapsed {int(elapsed)}s)")
-            try:
-                with urllib.request.urlopen(f"{VLLM_URL}/v1/models", timeout=5) as resp:
-                    data = json.loads(resp.read())
-                    model_ids = [m["id"] for m in data.get("data", [])]
-                    log(f"  Server ready! Models: {model_ids}")
-                    pid_file.unlink(missing_ok=True)
-                    return proc
-            except Exception:
-                pass
-
-        time.sleep(5)
+    return _launch_and_poll_vllm(cmd, "merged model", env)
 
 
 # ── Step 5: Evaluate ──────────────────────────────────────────────────────────
@@ -1560,7 +1518,7 @@ def main() -> None:
             step_report(ft_path, base_path, status_path)
 
         else:
-            # ── Standard path (merged or multi-LoRA) ──
+            # ── Standard LoRA path (no DARE-TIES merge) ──
             serving_merged = MERGED_DIR.exists() and (MERGED_DIR / "config.json").exists()
             do_best_checkpoint = (not args.no_best_checkpoint and not args.skip_train
                                   and not serving_merged)

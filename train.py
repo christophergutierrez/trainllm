@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _config
 cfg = _config.load()
 
+# HF_HOME must be set before importing torch/unsloth — they read it at import time.
 os.environ["HF_HOME"] = str(cfg.hf_home)
 
 import torch  # noqa: E402

@@ -31,6 +31,7 @@ All settings live in `config.yaml`. Scripts read it at startup; env vars overrid
 model: Qwen/Qwen2.5-Coder-14B-Instruct   # any HuggingFace model ID
 adapter_name: my-adapter                  # LoRA module name in vLLM; drives lora/ path
 chat_template: qwen-2.5                   # Unsloth template name (see below)
+runtime: vllm                             # "vllm" (default) or "external" (user-managed server)
 
 paths:
   base_dir: ~/trainLLM
