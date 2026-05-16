@@ -201,11 +201,11 @@ Hand-curated holdout records (prefixed `canonical-`, `mcp-`, `mcp_`) from prior 
 Versioned snapshots of prepared data are stored in `handoff/<org>_thinking_<date>_v<N>/`:
 
 ```
-handoff/videoamp_thinking_20260515_v7/
+handoff/acme_thinking_20260515_v7/
 ├── config.qwen3-thinking.yaml     # config snapshot for reproducibility
 ├── training.jsonl                  # global training set
 ├── holdout.jsonl                   # global holdout set
-└── videoamp/                       # per-endpoint source data
+└── acme/                           # per-endpoint source data
     ├── measurements/training.jsonl
     ├── audiences/training.jsonl
     └── ...
