@@ -53,6 +53,8 @@ training:
   lora_rank: 32
   lora_alpha: 64
   lora_dropout: 0
+  lora_init: gaussian
+  use_rslora: true
 
   # 8B is ~5x larger than 1.5B. Reduce batch, raise accumulation to keep
   # effective batch size at 32 (same as the 1.5B config: 8 × 4 = 32).
@@ -69,6 +71,8 @@ training:
   learning_rate: 5.0e-5    # halved from 1e-4; more steps compensate
   weight_decay: 0.01
   lr_scheduler: cosine
+  neftune_noise_alpha: 5
+  train_on_responses_only: true
   save_steps: 300
   save_total_limit: 3
 

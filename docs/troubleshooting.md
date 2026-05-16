@@ -83,6 +83,40 @@ The system turn is optional. `cycle.py` validates the first 3 records. Common mi
 3. Enable 4-bit quantization: set `training.load_in_4bit: true`.
 4. Ensure vLLM is not running: `python kill_vllm.py --kill`.
 
+### Loss masking produces empty/garbage output
+
+**Symptom:** After enabling `train_on_responses_only: true`, the model generates empty strings or repeats the prompt.
+
+**Cause:** The response boundary markers don't match the actual chat template. `train_on_responses_only` uses string matching to find `<|im_start|>assistant\n` in the tokenized text. If the template differs, no tokens are marked for training.
+
+**Fix:**
+1. Verify your chat template produces the expected markers:
+   ```python
+   tok = get_chat_template(tokenizer, chat_template="qwen-2.5")
+   text = tok.apply_chat_template(sample_conversation, tokenize=False)
+   print(repr(text))  # look for <|im_start|>assistant\n
+   ```
+2. If using a non-ChatML model, update the markers in `train.py` (the `instruction_part` and `response_part` arguments to `train_on_responses_only()`).
+3. As a quick workaround, set `train_on_responses_only: false` to disable.
+
+### Higher initial loss after enabling training enhancements
+
+**Symptom:** First loss is ~1.0–1.5 instead of the previous ~0.6–0.8.
+
+**Cause:** This is expected when `train_on_responses_only: true`. Previously, loss included easy-to-predict prompt tokens (system messages, user turns) which brought the average down. With response-only masking, loss is computed only on the harder generation tokens.
+
+**Fix:** No fix needed — this is correct behavior. Final converged loss will still reach 0.4–0.8. Compare runs with the same masking setting for valid A/B comparisons.
+
+### Unsloth rejects lora_init value
+
+**Symptom:** `ValueError: Unsloth: init_lora_weights must be either [True, False, "gaussian", "loftq", "corda"].`
+
+**Cause:** The `lora_init` config value is not in Unsloth's allowed list. Notably, `"pissa"` and `"olora"` are supported by PEFT but blocked by Unsloth's wrapper.
+
+**Fix:**
+1. Use one of the allowed values: `true`, `false`, `gaussian`, `loftq`, `corda`.
+2. To use PiSSA anyway, bypass Unsloth's wrapper (see architecture.md § LoRA initialization).
+
 ---
 
 ## vLLM / Serving
@@ -186,7 +220,18 @@ The system turn is optional. `cycle.py` validates the first 3 records. Common mi
 
 **Cause:** A key in the `training:` block is misspelled or not recognized.
 
-**Fix:** Check against the valid keys listed in the error message. Common typos: `learning-rate` (should be `learning_rate`), `max_step` (should be `max_steps`).
+**Fix:** Check against the valid keys listed in the error message. Valid training keys:
+
+```
+max_seq_length, lora_rank, lora_alpha, lora_dropout,
+batch_size, gradient_accumulation_steps, warmup_steps,
+max_steps, learning_rate, weight_decay, lr_scheduler,
+save_steps, save_total_limit, load_in_4bit,
+neftune_noise_alpha, train_on_responses_only,
+lora_init, use_rslora
+```
+
+Common typos: `learning-rate` (should be `learning_rate`), `max_step` (should be `max_steps`), `nef_tune` (should be `neftune_noise_alpha`).
 
 ### Missing required config key
 

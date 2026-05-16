@@ -11,6 +11,8 @@ _KNOWN_TRAINING_KEYS = {
     "batch_size", "gradient_accumulation_steps", "warmup_steps",
     "max_steps", "learning_rate", "weight_decay", "lr_scheduler",
     "save_steps", "save_total_limit", "load_in_4bit",
+    "neftune_noise_alpha", "train_on_responses_only",
+    "lora_init", "use_rslora",
 }
 
 
@@ -29,6 +31,10 @@ _TRAINING_DEFAULTS: dict[str, tuple[type, object]] = {
     "save_steps":                  (int,   500),
     "save_total_limit":            (None,  None),   # None type = int-or-None
     "load_in_4bit":                (bool,  False),
+    "neftune_noise_alpha":         (float, 5),
+    "train_on_responses_only":     (bool,  True),
+    "lora_init":                   (str,   "gaussian"),
+    "use_rslora":                  (bool,  True),
 }
 
 

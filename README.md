@@ -47,6 +47,8 @@ training:
   lora_rank: 16
   lora_alpha: 32
   lora_dropout: 0
+  lora_init: gaussian        # weight init: gaussian, true (Kaiming), loftq, corda
+  use_rslora: true           # rank-stabilized scaling (stable at higher ranks)
   batch_size: 2
   gradient_accumulation_steps: 4
   warmup_steps: 50
@@ -54,6 +56,8 @@ training:
   learning_rate: 2.0e-4
   weight_decay: 0.01
   lr_scheduler: cosine
+  neftune_noise_alpha: 5     # noisy embeddings; 0 to disable
+  train_on_responses_only: true  # loss on assistant tokens only
   save_steps: 500
   save_total_limit: null   # null = keep all checkpoints, required for best-checkpoint selection
 

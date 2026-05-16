@@ -96,6 +96,7 @@ def main() -> None:
         bias="none",
         use_gradient_checkpointing="unsloth",
         random_state=42,
+        use_rslora=cfg.training.use_rslora,
     )
 
     # ── Data preparation ──────────────────────────────────────────────────────

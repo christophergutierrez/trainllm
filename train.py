@@ -13,7 +13,7 @@ os.environ["HF_HOME"] = str(cfg.hf_home)
 
 import torch  # noqa: E402
 from unsloth import FastLanguageModel  # noqa: E402
-from unsloth.chat_templates import get_chat_template, standardize_sharegpt  # noqa: E402
+from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only  # noqa: E402
 from datasets import load_dataset  # noqa: E402
 from trl import SFTTrainer  # noqa: E402
 from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq  # noqa: E402
@@ -105,6 +105,12 @@ def main() -> None:
         trust_remote_code=True,
     )
 
+    lora_init = cfg.training.lora_init
+    if lora_init in ("true", "True"):
+        lora_init = True
+    elif lora_init in ("false", "False"):
+        lora_init = False
+
     model = FastLanguageModel.get_peft_model(
         model,
         r=cfg.training.lora_rank,
@@ -115,6 +121,8 @@ def main() -> None:
         bias="none",
         use_gradient_checkpointing="unsloth",
         random_state=42,
+        use_rslora=cfg.training.use_rslora,
+        init_lora_weights=lora_init,
     )
 
     print("Loading dataset...")
@@ -133,6 +141,10 @@ def main() -> None:
 
     plateau = PlateauDetector(patience_steps=200, min_delta=0.002)
 
+    neftune_alpha = cfg.training.neftune_noise_alpha
+    if neftune_alpha and neftune_alpha > 0:
+        print(f"NEFTune:        alpha={neftune_alpha}")
+
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -142,6 +154,7 @@ def main() -> None:
         data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
         dataset_kwargs={"skip_prepare_dataset": True},
         callbacks=[plateau],
+        neftune_noise_alpha=neftune_alpha if neftune_alpha and neftune_alpha > 0 else None,
         args=TrainingArguments(
             per_device_train_batch_size=cfg.training.batch_size,
             gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
@@ -159,6 +172,14 @@ def main() -> None:
             save_total_limit=cfg.training.save_total_limit,
         ),
     )
+
+    if cfg.training.train_on_responses_only:
+        print("Loss masking:   assistant tokens only")
+        trainer = train_on_responses_only(
+            trainer,
+            instruction_part="<|im_start|>user\n",
+            response_part="<|im_start|>assistant\n",
+        )
 
     print("Starting training...")
     trainer.train()

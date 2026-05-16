@@ -67,8 +67,48 @@ These cover all learned weight matrices that matter for style adaptation. Embedd
 | `lora_rank` | 16 | Capacity of the adapter; 16 is a reasonable starting point for domain adaptation |
 | `lora_alpha` | 32 | Effective learning rate scaling: `alpha/rank = 2` is a common target |
 | `lora_dropout` | 0 | Disabled — small ranks rarely need regularization from dropout |
+| `lora_init` | `gaussian` | Weight initialization strategy (see below) |
+| `use_rslora` | `true` | Rank-stabilized scaling for stable higher-rank training |
 
-Increasing rank increases adapter size and training time roughly linearly. Rank 32 or 64 makes sense if scores plateau and the base model capacity is not the bottleneck.
+Increasing rank increases adapter size and training time roughly linearly. Rank 32 or 64 makes sense if scores plateau and the base model capacity is not the bottleneck. With `use_rslora: true`, rank 64 is stable without tuning alpha separately.
+
+### LoRA initialization
+
+The `lora_init` config controls how adapter weight matrices are initialized before training:
+
+| Value | Behavior | When to use |
+|-------|----------|-------------|
+| `gaussian` (default) | Random gaussian init | General-purpose; slightly better than Kaiming for LoRA |
+| `true` | Kaiming uniform (PyTorch default) | Baseline comparison |
+| `false` | Zero init | Never (adapter learns nothing) |
+| `loftq` | LoftQ quantization-aware init | When using 4-bit quantized base models |
+| `corda` | Correlation-based decomposition | Requires calibration data; experimental |
+
+**PiSSA** (Principal Singular values and Singular vectors Adaptation) is supported by PEFT directly but blocked by Unsloth's `FastLanguageModel.get_peft_model()` wrapper. To use PiSSA, bypass Unsloth's wrapper:
+
+```python
+from peft import LoraConfig, get_peft_model
+
+peft_config = LoraConfig(
+    r=cfg.training.lora_rank,
+    lora_alpha=cfg.training.lora_alpha,
+    lora_dropout=cfg.training.lora_dropout,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj"],
+    bias="none",
+    init_lora_weights="pissa",  # or "pissa_niter_4" for faster approximation
+)
+model = get_peft_model(model, peft_config)
+model.enable_input_require_grads()
+```
+
+This loses Unsloth's custom gradient checkpointing (`"unsloth"` mode) and some kernel optimizations. Only worth it if PiSSA's faster convergence (documented as +5-8% on benchmarks) outweighs the ~20% speed loss from losing Unsloth's patches.
+
+### Rank-stabilized LoRA (rsLoRA)
+
+Standard LoRA scales the adapter output by `alpha/rank`. At higher ranks (64+), this scaling becomes aggressive and can destabilize training. rsLoRA uses `alpha/sqrt(rank)` instead, which keeps the effective learning rate stable as rank increases.
+
+With `use_rslora: true`, you can safely increase rank to 64 without adjusting alpha or learning rate. Memory impact of rank 64 is ~200MB additional on an 8B model (negligible on GB10's 128GB unified memory).
 
 ### Chat template and data format
 
@@ -97,12 +137,51 @@ The default schedule is:
 **Rule of thumb for max_steps:** aim for approximately 5–10 epochs over your dataset. With ~2000 training records and effective batch size 8, one epoch ≈ 250 steps, so 2000 steps ≈ 8 epochs. If you have 500 records, 2000 steps is ~32 epochs — likely overfit. Scale accordingly.
 
 **Loss interpretation:**
+- With `train_on_responses_only: true` (default), initial loss is typically ~1.0–1.5 because only assistant tokens contribute. This is higher than full-sequence training (~0.6–0.8 initial) but converges to the same range.
 - Loss converging to ~0.5–0.8 by the end is typical for instruction fine-tuning.
 - Loss > 1.0 at the end of training: undertrained — increase `max_steps`.
 - Loss < 0.15: overfit — reduce `max_steps` or add regularization.
 - Loss not decreasing at all: check `chat_template` matches the model; check data format.
 
 The adapter is saved to `lora/<adapter_name>/` as checkpoints every `save_steps` steps (keeping the last `save_total_limit`), with a final save to `lora/<adapter_name>/final/`.
+
+### Training quality features
+
+Two features improve output quality without changing hyperparameters:
+
+**NEFTune** (`neftune_noise_alpha`, default 5) — adds uniform noise to embedding vectors during the forward pass. The noise is scaled by `alpha / sqrt(seq_len)` and only applied during training (not inference). Published results show +10-30% improvement on instruction-following benchmarks. The mechanism is not fully understood but appears to act as a regularizer that prevents overfitting to surface patterns.
+
+```yaml
+training:
+  neftune_noise_alpha: 5    # default; set to 0 to disable
+```
+
+Higher alpha (10-15) may help with very small datasets (<200 records) but risks instability. Lower alpha (2-3) is more conservative.
+
+**Response-only loss masking** (`train_on_responses_only`, default true) — only computes gradient loss on assistant/response tokens. System prompts and user messages do not contribute to the loss. This focuses all training capacity on learning to generate correct responses rather than wasting gradient signal on predicting static prompt text.
+
+```yaml
+training:
+  train_on_responses_only: true   # default; set to false to train on full sequence
+```
+
+Implementation uses Unsloth's `train_on_responses_only()` function with chat template boundary markers:
+- `instruction_part`: `<|im_start|>user\n` (marks start of tokens to ignore)
+- `response_part`: `<|im_start|>assistant\n` (marks start of tokens to train on)
+
+These markers are specific to ChatML/Qwen templates. If you change `chat_template` to a non-ChatML model (e.g., Llama-3), you must update the markers in `train.py` to match that template's structure, or disable the feature.
+
+### Disabling all training enhancements
+
+To revert to vanilla QLoRA training (for A/B comparison or debugging):
+
+```yaml
+training:
+  neftune_noise_alpha: 0
+  train_on_responses_only: false
+  lora_init: true              # Kaiming uniform (PyTorch default)
+  use_rslora: false
+```
 
 ### Optimizer note
 
