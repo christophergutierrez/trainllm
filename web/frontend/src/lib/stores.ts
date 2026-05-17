@@ -5,11 +5,14 @@ import { trainingWs, agentWs } from './ws';
 
 // Training state
 export const trainingEvents = writable<any[]>([]);
+export const evalEvents = writable<any[]>([]);
 export const latestLoss = writable<number | null>(null);
+export const latestEvalLoss = writable<number | null>(null);
 export const latestStep = writable<number>(0);
 export const latestLR = writable<number | null>(null);
 export const cycleLog = writable<string[]>([]);
 export const isTraining = writable(false);
+export const trainingDone = writable(false);
 
 // Agent state
 export const agentStatus = writable<string>('disconnected');
@@ -30,8 +33,15 @@ export function initStores() {
       latestLR.set(event.lr);
       trainingEvents.update(events => [...events, event]);
       isTraining.set(true);
+    } else if (event.event === 'eval_loss') {
+      latestEvalLoss.set(event.value);
+      evalEvents.update(events => [...events, event]);
+    } else if (event.event === 'step_end' && event.step === 'train') {
+      isTraining.set(false);
+      trainingDone.set(true);
     } else if (event.type === 'cycle_end') {
       isTraining.set(false);
+      trainingDone.set(true);
     }
   });
 

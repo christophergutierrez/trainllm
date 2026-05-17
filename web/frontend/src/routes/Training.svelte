@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { latestLoss, latestStep, latestLR, trainingEvents, isTraining } from '../lib/stores';
+  import { onMount, onDestroy } from 'svelte';
+  import { latestLoss, latestEvalLoss, latestStep, latestLR, trainingEvents, evalEvents, isTraining, trainingDone } from '../lib/stores';
   import { api } from '../lib/api';
   import KPICard from '../components/KPICard.svelte';
   import ChartContainer from '../components/ChartContainer.svelte';
@@ -10,6 +10,12 @@
   let logScale = false;
   let maxSteps = 0;
   let runConfig: any = null;
+  let gpu: any = null;
+  let gpuTimer: ReturnType<typeof setInterval>;
+
+  async function pollGpu() {
+    try { gpu = (await api.diagnostics.gpu()).gpus?.[0] ?? null; } catch {}
+  }
 
   onMount(async () => {
     try {
@@ -22,24 +28,40 @@
         historicChart = await api.runs.lossChart(runs[0].id);
       }
     } catch {}
+    pollGpu();
+    gpuTimer = setInterval(pollGpu, 5000);
   });
 
-  $: liveChart = $trainingEvents.length >= 2 ? buildLiveChart($trainingEvents, logScale) : null;
+  onDestroy(() => clearInterval(gpuTimer));
+
+  $: liveChart = $trainingEvents.length >= 2 ? buildLiveChart($trainingEvents, $evalEvents, logScale) : null;
   $: displayChart = liveChart || applyScale(historicChart, logScale);
 
-  function buildLiveChart(events: any[], useLog: boolean) {
+  function buildLiveChart(events: any[], evals: any[], useLog: boolean) {
     const steps = events.map(e => e.step).filter(Boolean);
     const losses = events.map(e => e.value).filter((v: any) => v != null);
     if (steps.length < 2) return null;
-    return {
-      data: [{
-        x: steps,
-        y: losses,
+    const traces: any[] = [{
+      x: steps,
+      y: losses,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Train Loss',
+      line: { color: '#3b82f6', width: 2 },
+    }];
+    if (evals.length > 0) {
+      traces.push({
+        x: evals.map(e => e.step),
+        y: evals.map(e => e.value),
         type: 'scatter',
-        mode: 'lines',
-        name: 'Train Loss',
-        line: { color: '#3b82f6', width: 2 },
-      }],
+        mode: 'lines+markers',
+        name: 'Eval Loss',
+        line: { color: '#ef4444', width: 2, dash: 'dot' },
+        marker: { size: 6 },
+      });
+    }
+    return {
+      data: traces,
       layout: {
         xaxis: { title: { text: 'Step' }, color: '#94a3b8', gridcolor: '#2a2a4a' },
         yaxis: { title: { text: 'Loss' }, type: useLog ? 'log' : 'linear', color: '#94a3b8', gridcolor: '#2a2a4a' },
@@ -103,54 +125,86 @@
 </script>
 
 <div class="training-page">
-  <div class="kpi-row">
-    <KPICard
-      label="Loss"
-      value={$latestLoss?.toFixed(4) ?? '—'}
-      trend={$isTraining ? 'down' : null}
-      hint="Current training loss at the latest logged step"
-    />
-    <KPICard
-      label="Step"
-      value={$latestStep || '—'}
-      hint="Gradient updates completed so far"
-    />
-    <KPICard
-      label="Progress"
-      value={progress != null ? `${progress}%` : '—'}
-      hint="Percent of max_steps completed. Training may end earlier — early stopping halts when loss plateaus."
-    />
-    <KPICard
-      label="Elapsed"
-      value={fmtDuration(elapsed)}
-      hint="Wall-clock time since training steps began (excludes model loading)"
-    />
-    <KPICard
-      label="Remaining"
-      value={fmtDuration(etaMax)}
-      hint="Worst-case time left assuming all max_steps run. Early stopping typically ends sooner."
-    />
-    <KPICard
-      label="s/step"
-      value={secPerStep ? secPerStep.toFixed(1) : '—'}
-      hint="Seconds per gradient update (wall-clock). Lower is faster."
-    />
-    <KPICard
-      label="LR"
-      value={$latestLR ? $latestLR.toExponential(1) : '—'}
-      hint="Current learning rate from the cosine scheduler"
-    />
+  {#if $trainingDone}
+    <div class="status-banner done">
+      <span class="status-icon">&#10003;</span>
+      <span>Training Complete — stopped at step {$latestStep} (early stop)</span>
+    </div>
+  {:else if $isTraining}
+    <div class="status-banner active">
+      <span class="status-dot"></span>
+      <span>Training in progress</span>
+    </div>
+  {/if}
+
+  <div class="kpi-section">
+    <div class="kpi-group">
+      <span class="kpi-group-label">Model Performance</span>
+      <div class="kpi-row">
+        <KPICard
+          label="Train Loss"
+          value={$latestLoss?.toFixed(4) ?? '—'}
+          trend={$isTraining ? 'down' : null}
+          hint="Current training loss at the latest logged step"
+        />
+        <KPICard
+          label="Eval Loss"
+          value={$latestEvalLoss?.toFixed(4) ?? '—'}
+          hint="Validation loss on held-out 5% split. Rising eval loss while train loss drops signals overfitting."
+        />
+        <KPICard
+          label="Step"
+          value={$latestStep || '—'}
+          hint="Gradient updates completed so far"
+        />
+        <KPICard
+          label="Progress"
+          value={progress != null ? `${progress}%` : '—'}
+          hint="Percent of max_steps completed. Training may end earlier — early stopping halts when loss plateaus."
+        />
+      </div>
+    </div>
+    <div class="kpi-group">
+      <span class="kpi-group-label">Pacing & Compute</span>
+      <div class="kpi-row">
+        <KPICard
+          label="s/step"
+          value={secPerStep ? secPerStep.toFixed(1) : '—'}
+          hint="Seconds per gradient update (wall-clock). Lower is faster."
+        />
+        <KPICard
+          label="LR"
+          value={$latestLR ? $latestLR.toExponential(1) : '—'}
+          hint="Current learning rate from the cosine scheduler"
+        />
+        <KPICard
+          label="Elapsed"
+          value={fmtDuration(elapsed)}
+          hint="Wall-clock time since training steps began (excludes model loading)"
+        />
+        <KPICard
+          label="Remaining"
+          value={fmtDuration(etaMax)}
+          hint="Worst-case time left assuming all max_steps run. Early stopping typically ends sooner."
+        />
+      </div>
+    </div>
   </div>
 
   <div class="charts-row">
     <div class="chart-wrapper">
-      {#if liveChart}
-        <span class="live-badge">LIVE</span>
-      {/if}
-      <button class="scale-toggle" on:click={() => logScale = !logScale}>
-        {logScale ? 'LOG' : 'LIN'}
-      </button>
-      <ChartContainer title="Loss Curve" figure={displayChart} />
+      <div class="chart-header">
+        <span class="chart-title">Loss Curve</span>
+        <div class="chart-controls">
+          {#if liveChart}
+            <span class="live-badge">LIVE</span>
+          {/if}
+          <button class="scale-toggle" on:click={() => logScale = !logScale}>
+            {logScale ? 'LOG' : 'LIN'}
+          </button>
+        </div>
+      </div>
+      <ChartContainer figure={displayChart} />
     </div>
   </div>
 
@@ -252,23 +306,90 @@
           </div>
         </div>
       </div>
+
+      {#if gpu}
+        <div class="gpu-telemetry">
+          <div class="gpu-header">
+            <span class="group-label">{gpu.name}{gpu.unified_memory ? ' (Unified Memory)' : ''}</span>
+            <span class="gpu-stats">
+              {#if gpu.temperature_c != null}{gpu.temperature_c}°C{/if}
+              {#if gpu.utilization_pct != null} · {gpu.utilization_pct}% util{/if}
+            </span>
+          </div>
+          <div class="mem-bar-wrap">
+            <div class="mem-bar">
+              <div
+                class="mem-bar-fill"
+                class:warn={gpu.memory_pct > 85}
+                class:crit={gpu.memory_pct > 95}
+                style="width: {gpu.memory_pct}%"
+              ></div>
+            </div>
+            <span class="mem-label">
+              {Math.round(gpu.memory_used_mb / 1024)}G / {Math.round(gpu.memory_total_mb / 1024)}G
+              ({gpu.memory_pct}%)
+            </span>
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
 
 <style>
   .training-page { padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+  .status-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .status-banner.done {
+    background: #064e3b;
+    border: 1px solid #10b981;
+    color: #6ee7b7;
+  }
+  .status-banner.active {
+    background: #1e3a5f;
+    border: 1px solid #3b82f6;
+    color: #93c5fd;
+  }
+  .status-icon { font-size: 1.1rem; }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3b82f6;
+    animation: pulse 2s infinite;
+  }
+  .kpi-section { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .kpi-group { display: flex; flex-direction: column; gap: 0.4rem; }
+  .kpi-group-label { font-size: 0.6rem; color: #64748b; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; }
   .kpi-row { display: flex; gap: 0.8rem; flex-wrap: wrap; }
   .charts-row { display: grid; grid-template-columns: 1fr; gap: 0.8rem; }
-  .chart-wrapper { position: relative; }
+  .chart-wrapper { }
+  .chart-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.4rem;
+  }
+  .chart-title {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #94a3b8;
+    text-transform: uppercase;
+  }
+  .chart-controls { display: flex; align-items: center; gap: 0.4rem; }
   .live-badge {
-    position: absolute; top: 0.6rem; right: 0.8rem; z-index: 10;
     background: #dc2626; color: white; font-size: 0.6rem; font-weight: 700;
     padding: 0.15rem 0.4rem; border-radius: 3px; letter-spacing: 0.05em;
     animation: pulse 2s infinite;
   }
   .scale-toggle {
-    position: absolute; top: 0.6rem; right: 3.5rem; z-index: 10;
     background: #1e293b; color: #94a3b8; font-size: 0.6rem; font-weight: 700;
     padding: 0.15rem 0.5rem; border-radius: 3px; border: 1px solid #2a2a4a;
     cursor: pointer; letter-spacing: 0.05em;
@@ -298,4 +419,33 @@
     font-size: 0.68rem;
     font-weight: 500;
   }
+  .gpu-telemetry {
+    margin-top: 0.8rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid #2a2a4a;
+  }
+  .gpu-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.4rem;
+  }
+  .gpu-stats { font-size: 0.7rem; color: #94a3b8; }
+  .mem-bar-wrap { display: flex; align-items: center; gap: 0.6rem; }
+  .mem-bar {
+    flex: 1;
+    height: 8px;
+    background: #2a2a4a;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .mem-bar-fill {
+    height: 100%;
+    background: #3b82f6;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+  }
+  .mem-bar-fill.warn { background: #f59e0b; }
+  .mem-bar-fill.crit { background: #ef4444; }
+  .mem-label { font-size: 0.7rem; color: #94a3b8; white-space: nowrap; }
 </style>

@@ -1,6 +1,7 @@
 """Endpoints for system diagnostics and timing data."""
 
 import json
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -48,6 +49,75 @@ async def get_convergence():
         return json.loads(conv.read_text())
 
     raise HTTPException(404, "No convergence data found")
+
+
+def _safe_int(v: str) -> int | None:
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return None
+
+
+@router.get("/gpu")
+async def gpu_stats():
+    """Return current GPU utilization and system memory (for unified-memory GPUs)."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,name,temperature.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            raise HTTPException(503, "nvidia-smi failed")
+        gpus = []
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                continue
+            gpu_util = _safe_int(parts[0])
+            name = parts[1]
+            temp = _safe_int(parts[2])
+            mem_used = _safe_int(parts[3])
+            mem_total = _safe_int(parts[4])
+
+            gpu: dict = {"name": name}
+            if gpu_util is not None:
+                gpu["utilization_pct"] = gpu_util
+            if temp is not None:
+                gpu["temperature_c"] = temp
+            if mem_used is not None and mem_total is not None and mem_total > 0:
+                gpu["memory_used_mb"] = mem_used
+                gpu["memory_total_mb"] = mem_total
+                gpu["memory_pct"] = round(mem_used / mem_total * 100, 1)
+            gpus.append(gpu)
+
+        if gpus and "memory_used_mb" not in gpus[0]:
+            try:
+                mem = subprocess.run(
+                    ["free", "-m"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for mline in mem.stdout.splitlines():
+                    if mline.startswith("Mem:"):
+                        mparts = mline.split()
+                        total = int(mparts[1])
+                        used = int(mparts[2])
+                        gpus[0]["memory_used_mb"] = used
+                        gpus[0]["memory_total_mb"] = total
+                        gpus[0]["memory_pct"] = round(used / total * 100, 1)
+                        gpus[0]["unified_memory"] = True
+                        break
+            except Exception:
+                pass
+
+        return {"gpus": gpus}
+    except FileNotFoundError:
+        raise HTTPException(503, "nvidia-smi not found")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(503, "nvidia-smi timed out")
 
 
 @router.get("/data-coverage")

@@ -21,6 +21,17 @@
       "git_sha": "3b2d8870a24cc4ae03bbb1f0b1e2f36f84881402",
       "filename": "api-thinking-v2.tar.gz",
       "size_mb": 310.4
+    },
+    {
+      "adapter": "api-thinking",
+      "version": 3,
+      "model_name": "api-thinking-v3",
+      "base_model": "unsloth/Qwen3-8B-FP8",
+      "score": 0.9913,
+      "created": "2026-05-17T20:37:59.469493+00:00",
+      "git_sha": "756b2707ec70a166fa25425cd6027e8048a0e094",
+      "filename": "api-thinking-v3.tar.gz",
+      "size_mb": 311.3
     }
   ]
 }
