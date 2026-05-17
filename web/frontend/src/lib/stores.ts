@@ -35,10 +35,12 @@ export function initStores() {
     }
   });
 
+  agentWs.onStatus((connected) => {
+    agentStatus.set(connected ? 'connected' : 'disconnected');
+  });
+
   agentWs.subscribe((msg) => {
-    if (msg.type === 'agent_status') {
-      agentStatus.set(msg.status);
-    } else if (msg.type === 'recommendations') {
+    if (msg.type === 'recommendations') {
       recommendations.set(msg.data || []);
     } else if (msg.type === 'agent_response' || msg.type === 'agent_thinking') {
       agentMessages.update(msgs => [...msgs.slice(-50), msg]);

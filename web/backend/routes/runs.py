@@ -88,17 +88,67 @@ async def run_loss_chart(run_id: str):
 
 
 def _find_convergence(run_id: str) -> dict | None:
-    """Find convergence.json for a run. Check lora dirs for matching timestamps."""
-    adapter = cfg.adapter_name
-    lora_base = cfg.lora_dir / adapter
-    if not lora_base.exists():
-        lora_base = cfg.lora_dir
+    """Find convergence.json for a run based on the model name in the eval data."""
+    import re
+    # Extract adapter/model name from the eval metadata
+    eval_path = cfg.evals_dir / f"{run_id}.json"
+    model_name = cfg.adapter_name
+    if eval_path.exists():
+        try:
+            meta = json.loads(eval_path.read_text()).get("meta", {})
+            model_name = meta.get("model", model_name)
+        except (json.JSONDecodeError, KeyError):
+            pass
 
-    for subdir in ["final", "."]:
-        conv_path = lora_base / subdir / "convergence.json"
-        if conv_path.exists():
-            try:
-                return json.loads(conv_path.read_text())
-            except json.JSONDecodeError:
-                pass
+    # Strip checkpoint suffixes like "-ckpt1200" to get the base adapter name
+    base_adapter = re.sub(r"-ckpt\d+$", "", model_name)
+
+    # Try adapter-specific lora directory (most specific first)
+    candidates = [
+        cfg.lora_dir / model_name,
+        cfg.lora_dir / base_adapter,
+        cfg.lora_dir / cfg.adapter_name,
+    ]
+
+    for adapter_dir in candidates:
+        if not adapter_dir.exists():
+            continue
+
+        conv_data = None
+        for subdir in [".", "final"]:
+            conv_path = adapter_dir / subdir / "convergence.json"
+            if conv_path.exists():
+                try:
+                    conv_data = json.loads(conv_path.read_text())
+                    break
+                except json.JSONDecodeError:
+                    pass
+
+        if conv_data:
+            if "loss_history" not in conv_data:
+                loss_history = _extract_loss_history(adapter_dir)
+                if loss_history:
+                    conv_data["loss_history"] = loss_history
+            return conv_data
+
     return None
+
+
+def _extract_loss_history(lora_dir: Path) -> list:
+    """Extract loss history from the latest trainer_state.json checkpoint."""
+    checkpoints = sorted(lora_dir.glob("checkpoint-*"), key=lambda p: p.name)
+    if not checkpoints:
+        return []
+    state_file = checkpoints[-1] / "trainer_state.json"
+    if not state_file.exists():
+        return []
+    try:
+        state = json.loads(state_file.read_text())
+        log_history = state.get("log_history", [])
+        return [
+            [entry["step"], entry["loss"]]
+            for entry in log_history
+            if "loss" in entry
+        ]
+    except (json.JSONDecodeError, KeyError):
+        return []

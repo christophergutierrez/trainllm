@@ -5,6 +5,7 @@ type Listener = (data: any) => void;
 class WsChannel {
   private ws: WebSocket | null = null;
   private listeners: Set<Listener> = new Set();
+  private statusListeners: Set<(connected: boolean) => void> = new Set();
   private reconnectTimer: number | null = null;
   private url: string;
 
@@ -19,6 +20,10 @@ class WsChannel {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.ws = new WebSocket(this.url);
 
+    this.ws.onopen = () => {
+      this.statusListeners.forEach(fn => fn(true));
+    };
+
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -27,6 +32,7 @@ class WsChannel {
     };
 
     this.ws.onclose = () => {
+      this.statusListeners.forEach(fn => fn(false));
       this.reconnectTimer = window.setTimeout(() => this.connect(), 3000);
     };
 
@@ -50,6 +56,11 @@ class WsChannel {
       this.connect();
     }
     return () => this.listeners.delete(fn);
+  }
+
+  onStatus(fn: (connected: boolean) => void): () => void {
+    this.statusListeners.add(fn);
+    return () => this.statusListeners.delete(fn);
   }
 
   send(data: object) {

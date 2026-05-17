@@ -49,4 +49,9 @@ export const api = {
       post<any>(`/api/cycle/start?${new URLSearchParams(opts as any || {})}`),
     stop: () => post<any>('/api/cycle/stop'),
   },
+  bundles: {
+    list: () => get<any>('/api/bundles'),
+    manifest: (name: string) => get<any>(`/api/bundles/${name}`),
+    downloadUrl: (name: string) => `${BASE}/api/bundles/${name}/download`,
+  },
 };

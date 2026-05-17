@@ -89,5 +89,5 @@ async def eval_score_distribution(eval_id: str):
         if r.get("band") != "ERROR"
     ]
     if not scores:
-        raise HTTPException(404, "No score data")
+        return charts.score_distribution([0.0])
     return charts.score_distribution(scores)

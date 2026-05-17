@@ -12,9 +12,13 @@
   onMount(async () => {
     try {
       convergence = await api.diagnostics.convergence();
-    } catch (e: any) {
-      // No convergence data yet — that's fine
-    }
+    } catch {}
+    try {
+      const runs = await api.runs.list();
+      if (runs.length > 0) {
+        lossChart = await api.runs.lossChart(runs[0].id);
+      }
+    } catch {}
   });
 
   $: stepsPerSec = $trainingEvents.length > 1

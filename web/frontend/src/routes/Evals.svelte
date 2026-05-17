@@ -26,6 +26,11 @@
 
   async function loadEval() {
     if (!selectedEval) return;
+    evalData = null;
+    bandChart = null;
+    scoreChart = null;
+    records = [];
+    total = 0;
     try {
       evalData = await api.evals.get(selectedEval);
       const params: Record<string, string> = { limit: '50' };
@@ -33,9 +38,9 @@
       const res = await api.evals.records(selectedEval, params);
       records = res.records;
       total = res.total;
-      bandChart = await api.evals.bandChart(selectedEval);
-      scoreChart = await api.evals.scoreChart(selectedEval);
     } catch {}
+    try { bandChart = await api.evals.bandChart(selectedEval); } catch {}
+    try { scoreChart = await api.evals.scoreChart(selectedEval); } catch {}
   }
 
   function selectRecord(rec: any) {

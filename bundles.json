@@ -1,0 +1,15 @@
+{
+  "bundles": [
+    {
+      "adapter": "api-thinking",
+      "version": 1,
+      "bundle_name": "api-thinking-v1",
+      "base_model": "unsloth/Qwen3-8B",
+      "score": 0.9913,
+      "created": "2026-05-17T13:38:22.410552+00:00",
+      "git_sha": "bf0392df845fdb826a514e0f8bbe069faba37955",
+      "filename": "api-thinking-v1.tar.gz",
+      "size_mb": 310.3
+    }
+  ]
+}

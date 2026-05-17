@@ -54,10 +54,20 @@ class ClaudeBridge(AgentBridge):
         })
 
     async def send(self, message: str) -> None:
-        await manager.broadcast(Channel.AGENT, {
-            "type": "agent_thinking",
-            "content": f"Processing: {message}",
-        })
+        from .routes.agent import _message_log
+        from datetime import datetime, timezone
+        response = {
+            "type": "agent_response",
+            "content": (
+                "Agent bridge is connected but no Claude session is active. "
+                "Start a training cycle to spawn the agent, or run:\n"
+                "  AGENT_PROVIDER=claude python -m web.backend.main\n"
+                f"Your command: \"{message}\""
+            ),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        _message_log.append(response)
+        await manager.broadcast(Channel.AGENT, response)
 
     async def receive(self) -> AsyncIterator[str]:
         while self._alive:

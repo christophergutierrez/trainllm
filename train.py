@@ -80,6 +80,8 @@ class PlateauDetector(TrainerCallback):
             print(f"  {k}: {v}")
         print(f"===========================\n")
 
+        summary["loss_history"] = [[s, l] for s, l, _ in self.loss_history]
+
         out = Path(args.output_dir) / "convergence.json"
         out.write_text(json.dumps(summary, indent=2) + "\n")
         print(f"Convergence stats: {out}")

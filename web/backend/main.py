@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import cfg
-from .routes import runs, evals, diagnostics, pipeline_config, cycle
+from .routes import runs, evals, diagnostics, pipeline_config, cycle, bundles, agent
 from .ws import router as ws_router
 
 app = FastAPI(title="trainLLM Dashboard", version="0.1.0")
@@ -22,6 +22,8 @@ app.include_router(evals.router, prefix="/api/evals", tags=["evals"])
 app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["diagnostics"])
 app.include_router(pipeline_config.router, prefix="/api/config", tags=["config"])
 app.include_router(cycle.router, prefix="/api/cycle", tags=["cycle"])
+app.include_router(bundles.router, prefix="/api/bundles", tags=["bundles"])
+app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
 app.include_router(ws_router)
 
 
