@@ -4,11 +4,50 @@ Kept in a separate module so tests can import callbacks without pulling in
 torch/unsloth, which require a GPU environment.
 """
 
+import json
+import os
+from datetime import datetime, timezone
+
 try:
     from transformers import TrainerCallback
 except ImportError:
     class TrainerCallback:  # type: ignore[no-redef]
         pass
+
+
+EVENTS_FILE = os.environ.get("TRAINLLM_EVENTS", "/tmp/trainllm_events.jsonl")
+
+
+class EventEmitterCallback(TrainerCallback):
+    """Writes structured training events to a JSONL file for the web dashboard."""
+
+    def __init__(self, events_file: str | None = None):
+        self._path = events_file or EVENTS_FILE
+
+    def _emit(self, event: dict):
+        event["timestamp"] = datetime.now(timezone.utc).isoformat()
+        try:
+            with open(self._path, "a") as f:
+                f.write(json.dumps(event) + "\n")
+        except OSError:
+            pass
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self._emit({"event": "step_start", "step": "train", "max_steps": args.max_steps})
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not logs or "loss" not in logs:
+            return
+        self._emit({
+            "event": "loss",
+            "step": state.global_step,
+            "value": round(logs["loss"], 5),
+            "lr": round(logs.get("learning_rate", 0), 8),
+            "epoch": round(logs.get("epoch", 0), 4),
+        })
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._emit({"event": "step_end", "step": "train", "duration_sec": None})
 
 
 class WSDDecayCallback(TrainerCallback):

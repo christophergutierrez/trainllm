@@ -17,7 +17,7 @@ from unsloth.chat_templates import get_chat_template, standardize_sharegpt, trai
 from datasets import load_dataset  # noqa: E402
 from trl import SFTTrainer  # noqa: E402
 from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq  # noqa: E402
-from _callbacks import WSDDecayCallback  # noqa: E402
+from _callbacks import WSDDecayCallback, EventEmitterCallback  # noqa: E402
 
 
 class PlateauDetector(TrainerCallback):
@@ -96,12 +96,25 @@ def main() -> None:
     print(f"Training data: {DATA_PATH}")
     print(f"Output dir:    {OUTPUT_DIR}")
     print(f"Max steps:     {MAX_STEPS}")
+    print(f"Optimizer:     {cfg.training.optimizer}")
+
+    quant_kwargs = {}
+    if cfg.training.load_in_fp8:
+        quant_kwargs["load_in_4bit"] = False
+        quant_kwargs["load_in_fp8"] = True
+        print("Quantization:  FP8")
+    elif cfg.training.load_in_4bit:
+        quant_kwargs["load_in_4bit"] = True
+        print("Quantization:  4-bit")
+    else:
+        quant_kwargs["load_in_4bit"] = False
+        print("Quantization:  none (bf16)")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=MODEL_NAME,
         max_seq_length=cfg.training.max_seq_length,
         dtype=None,
-        load_in_4bit=cfg.training.load_in_4bit,
+        **quant_kwargs,
         device_map={"": torch.cuda.current_device()},
         attn_implementation="sdpa",
         trust_remote_code=True,
@@ -152,7 +165,7 @@ def main() -> None:
 
     plateau = PlateauDetector(patience_steps=200, min_delta=0.002)
 
-    callbacks         = [plateau]
+    callbacks         = [plateau, EventEmitterCallback()]
     actual_lr_sched   = cfg.training.lr_scheduler
     if cfg.training.lr_scheduler == "wsd":
         actual_lr_sched = "constant_with_warmup"
@@ -187,7 +200,7 @@ def main() -> None:
             learning_rate=cfg.training.learning_rate,
             bf16=True,
             logging_steps=10,
-            optim="adamw_torch",        # adamw_8bit broken on CUDA 13
+            optim=cfg.training.optimizer,
             weight_decay=cfg.training.weight_decay,
             lr_scheduler_type=actual_lr_sched,
             seed=42,

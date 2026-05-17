@@ -30,6 +30,9 @@ training:
   lr_scheduler: cosine
   neftune_noise_alpha: 5    # noisy embeddings during training (0 to disable); improves instruction-following
   train_on_responses_only: true  # only compute loss on assistant tokens, not prompts
+  load_in_4bit: false       # QLoRA quantization (4-bit; mutually exclusive with fp8)
+  load_in_fp8: false        # FP8 quantization (~32% faster on Blackwell; mutually exclusive with 4bit)
+  optimizer: adamw_torch    # "adamw_torch" (default) or "adamw_8bit" (lower VRAM, requires bitsandbytes)
   save_steps: 500
   save_total_limit: null   # null = keep all checkpoints (required for best-checkpoint selection in cycle.py)
 

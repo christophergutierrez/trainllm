@@ -170,6 +170,26 @@ class TestConfigTypeCasting:
         cfg = _config.load(config_path=path)
         assert cfg.training.load_in_4bit is True
 
+    def test_fp8_default_false(self, tmp_path):
+        path = _write_config(tmp_path)
+        cfg = _config.load(config_path=path)
+        assert cfg.training.load_in_fp8 is False
+
+    def test_fp8_explicit_true(self, tmp_path):
+        path = _write_config(tmp_path, {"training": {"load_in_fp8": True}})
+        cfg = _config.load(config_path=path)
+        assert cfg.training.load_in_fp8 is True
+
+    def test_optimizer_default(self, tmp_path):
+        path = _write_config(tmp_path)
+        cfg = _config.load(config_path=path)
+        assert cfg.training.optimizer == "adamw_torch"
+
+    def test_optimizer_8bit(self, tmp_path):
+        path = _write_config(tmp_path, {"training": {"optimizer": "adamw_8bit"}})
+        cfg = _config.load(config_path=path)
+        assert cfg.training.optimizer == "adamw_8bit"
+
     def test_extra_keys_preserved(self, tmp_path):
         """Keys not in _TRAINING_DEFAULTS are still accessible if in _KNOWN_TRAINING_KEYS."""
         path = _write_config(tmp_path, {"training": {"neftune_noise_alpha": 7.5}})

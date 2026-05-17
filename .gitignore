@@ -23,3 +23,10 @@ __pycache__/
 _unsloth_sentencepiece_temp/
 unsloth*
 tmp/
+
+# Web frontend
+web/fixtures/
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/build/
+.env
