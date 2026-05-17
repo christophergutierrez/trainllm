@@ -43,12 +43,18 @@ export function initStores() {
       latestLoss.set(event.value);
       latestStep.set(event.step);
       latestLR.set(event.lr);
-      trainingEvents.update(events => [...events, event]);
+      trainingEvents.update(events => {
+        if (events.length > 0 && events[events.length - 1].step >= event.step) return events;
+        return [...events, event];
+      });
       isTraining.set(true);
       trainingDone.set(false);
     } else if (event.event === 'eval_loss') {
       latestEvalLoss.set(event.value);
-      evalEvents.update(events => [...events, event]);
+      evalEvents.update(events => {
+        if (events.length > 0 && events[events.length - 1].step >= event.step) return events;
+        return [...events, event];
+      });
     } else if (event.event === 'error') {
       pipelineErrors.update(errs => [...errs.slice(-19), event]);
     } else if (event.event === 'warning') {

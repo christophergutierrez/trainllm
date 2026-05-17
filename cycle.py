@@ -126,6 +126,7 @@ def _notify_agent(code: str, message: str, detail: dict | None = None) -> None:
 
 def die(msg: str) -> None:
     log(msg, "FATAL")
+    emit_error("FATAL", msg)
     _notify_agent("FATAL", msg)
     if LOG_PATH:
         log(f"Full log: {LOG_PATH}", "FATAL")

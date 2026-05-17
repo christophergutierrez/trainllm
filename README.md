@@ -457,6 +457,76 @@ Discovers endpoint directories, generates per-endpoint configs with auto-sized t
 
 Emits `synth_status.yaml` from an eval JSON for the reposynth feedback loop. Called automatically by `cycle.py` step 5b. **Note:** the `format_health` section contains Go-specific heuristics — results are meaningless for non-Go outputs.
 
+## Web dashboard
+
+A real-time monitoring dashboard for training runs.
+
+### Start the dashboard
+
+```bash
+# Backend (FastAPI):
+PYTHONDONTWRITEBYTECODE=1 uvicorn web.backend.main:app --host 0.0.0.0 --port 8080
+
+# Frontend (Vite + Svelte):
+cd web/frontend && npm run dev
+```
+
+The frontend proxies API/WS requests to the backend via `vite.config.ts`.
+
+### Features
+
+- **Training page** — live loss chart (train + eval), KPIs (step, loss, LR, elapsed/remaining), GPU telemetry bar, run config panel with tooltip hints
+- **Runs page** — split-pane history with loss charts per run
+- **Evals page** — band breakdowns, per-convention scores, record-level inspection
+- **Models page** — bundled model comparison (loss curves, eval scores, convergence stats)
+- **Diagnostics page** — pipeline health, step timing, convergence data, alerts timeline
+- **Agent panel** — chat with the Claude Code session that started training (file-based relay)
+
+### Agent relay
+
+When training is started from a Claude Code session, the dashboard can communicate with that session:
+
+- **Presence**: The session writes `/tmp/trainllm_agent_presence.json` (refreshed every 60s)
+- **Inbox**: Dashboard writes user messages to `/tmp/trainllm_agent_inbox.jsonl`
+- **Outbox**: Session writes responses to `/tmp/trainllm_agent_outbox.jsonl`
+
+If no agent session is active (presence file stale >5 min), the panel shows "AI Disabled."
+
+To enable the relay from a Claude Code session:
+```bash
+python agent_relay.py --presence &  # keep presence alive
+# Then poll inbox and respond via outbox
+```
+
+### Monitoring and alerts
+
+The pipeline emits structured events to `/tmp/trainllm_events.jsonl`:
+- `step_start` / `step_end` — pipeline phase lifecycle (train, vllm, eval, merge)
+- `loss` / `eval_loss` — training metrics
+- `error` / `warning` — pipeline failures and early warnings
+
+The WatchdogProcess emits proactive warnings:
+- `SILENCE_WARNING` at 50% of silence timeout
+- `WALL_WARNING` at 80% of wall timeout
+- `PLATEAU` when PlateauDetector triggers early stop
+
+Fatal errors (`die()`) automatically emit error events and notify connected agents.
+
+## Model bundling
+
+Bundle trained adapters as versioned tarballs for comparison and deployment:
+
+```bash
+python bundle.py                    # bundle current adapter as next version
+python bundle.py --name custom-v1   # custom version name
+```
+
+Bundled models are listed in `models.json` and accessible via the Models page in the dashboard. The comparison view shows convergence curves and eval scores side-by-side.
+
+## Known issues and limitations
+
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for tracked issues, architectural debt, and planned improvements.
+
 ## See also
 
 - [Architecture](docs/architecture.md) — detailed design notes on the pipeline, training approach, and evaluation.
