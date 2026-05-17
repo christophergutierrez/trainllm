@@ -1,16 +1,15 @@
 """REST endpoints for agent interaction — allows external agents to send/receive via HTTP."""
 
-from collections import deque
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..ws import manager, Channel
+from ..agent_bridge import get_bridge, _message_log
 
 router = APIRouter()
-
-_message_log: deque = deque(maxlen=100)
 
 
 class AgentCommand(BaseModel):
@@ -28,12 +27,12 @@ async def send_command(cmd: AgentCommand):
     _message_log.append(msg)
     await manager.broadcast(Channel.AGENT, msg)
 
-    # Trigger the bridge response
-    from ..agent_bridge import create_bridge
-    bridge = create_bridge()
+    bridge = get_bridge()
     if not bridge.is_alive:
         await bridge.spawn()
-    await bridge.send(cmd.content)
+
+    # Fire and forget — response streams back via WebSocket
+    asyncio.create_task(bridge.send(cmd.content))
 
     return {"status": "sent", "content": cmd.content}
 
@@ -57,4 +56,5 @@ async def agent_status():
     return {
         "ws_clients": manager.client_count(Channel.AGENT),
         "message_count": len(_message_log),
+        "bridge_alive": get_bridge().is_alive,
     }
