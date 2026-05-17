@@ -17,7 +17,7 @@ models/
 merged/
 archive/
 handoff/
-bundles/*.tar.gz
+!models.json
 
 # Build artifacts
 __pycache__/

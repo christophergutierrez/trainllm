@@ -8,7 +8,7 @@
   import Evals from './routes/Evals.svelte';
   import Runs from './routes/Runs.svelte';
   import Diagnostics from './routes/Diagnostics.svelte';
-  import Bundles from './routes/Bundles.svelte';
+  import Models from './routes/Models.svelte';
 
   let showAgent = false;
 
@@ -30,8 +30,8 @@
         <Runs />
       {:else if $activeTab === 'diagnostics'}
         <Diagnostics />
-      {:else if $activeTab === 'bundles'}
-        <Bundles />
+      {:else if $activeTab === 'models'}
+        <Models />
       {/if}
     </main>
     <AgentPanel visible={showAgent} />

@@ -124,6 +124,122 @@ def timing_bars(step_names: list[str], durations_sec: list[float]) -> dict[str, 
     return fig.to_dict()
 
 
+COMPARISON_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"]
+
+
+def loss_comparison(models_data: list[dict]) -> dict[str, Any]:
+    """Overlaid loss curves for multiple models."""
+    fig = go.Figure()
+    for i, m in enumerate(models_data):
+        history = m.get("loss_history")
+        if not history:
+            continue
+        steps = [p[0] for p in history]
+        losses = [p[1] for p in history]
+        fig.add_trace(go.Scatter(
+            x=steps, y=losses,
+            mode="lines", name=m["model_name"],
+            line=dict(color=COMPARISON_COLORS[i % len(COMPARISON_COLORS)], width=2),
+        ))
+    fig.update_layout(
+        xaxis_title="Step",
+        yaxis_title="Loss",
+        template="plotly_dark",
+        margin=dict(l=50, r=20, t=20, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=320,
+    )
+    return fig.to_dict()
+
+
+def score_comparison(models_data: list[dict]) -> dict[str, Any]:
+    """Bar chart comparing composite scores across models."""
+    names = [m["model_name"] for m in models_data]
+    scores = [m.get("score") or 0 for m in models_data]
+    colors = [COMPARISON_COLORS[i % len(COMPARISON_COLORS)] for i in range(len(names))]
+
+    fig = go.Figure(data=[go.Bar(
+        x=names, y=scores,
+        marker_color=colors,
+        text=[f"{s:.4f}" for s in scores],
+        textposition="outside",
+    )])
+    fig.update_layout(
+        yaxis_title="Composite Score",
+        yaxis_range=[0, 1.05],
+        template="plotly_dark",
+        margin=dict(l=50, r=20, t=20, b=40),
+        height=280,
+    )
+    return fig.to_dict()
+
+
+def band_comparison(models_data: list[dict]) -> dict[str, Any]:
+    """Stacked bar chart of band distributions per model."""
+    band_order = ["EXCELLENT", "GOOD", "PARTIAL", "POOR", "ERROR"]
+    band_colors = {
+        "EXCELLENT": "#10b981",
+        "GOOD": "#3b82f6",
+        "PARTIAL": "#f59e0b",
+        "POOR": "#ef4444",
+        "ERROR": "#6b7280",
+    }
+    names = [m["model_name"] for m in models_data]
+
+    fig = go.Figure()
+    for band in band_order:
+        counts = [m.get("band_counts", {}).get(band, 0) for m in models_data]
+        if sum(counts) == 0:
+            continue
+        fig.add_trace(go.Bar(
+            x=names, y=counts,
+            name=band,
+            marker_color=band_colors.get(band, "#6b7280"),
+        ))
+    fig.update_layout(
+        barmode="stack",
+        yaxis_title="Records",
+        template="plotly_dark",
+        margin=dict(l=50, r=20, t=20, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=280,
+    )
+    return fig.to_dict()
+
+
+def convention_comparison(models_data: list[dict]) -> dict[str, Any]:
+    """Grouped bar chart of per-convention scores across models."""
+    all_conventions = {}
+    for m in models_data:
+        for c in m.get("convention_breakdown", []):
+            all_conventions[c["convention"]] = True
+
+    conv_names = sorted(all_conventions.keys())
+    if not conv_names:
+        return go.Figure().to_dict()
+
+    fig = go.Figure()
+    for i, m in enumerate(models_data):
+        conv_map = {c["convention"]: c["avg"] for c in m.get("convention_breakdown", [])}
+        scores = [conv_map.get(c, 0) for c in conv_names]
+        fig.add_trace(go.Bar(
+            x=conv_names, y=scores,
+            name=m["model_name"],
+            marker_color=COMPARISON_COLORS[i % len(COMPARISON_COLORS)],
+        ))
+    fig.update_layout(
+        barmode="group",
+        yaxis_title="Avg Score",
+        yaxis_range=[0, 1.05],
+        xaxis_tickangle=-30,
+        template="plotly_dark",
+        margin=dict(l=50, r=20, t=20, b=80),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=320,
+    )
+    return fig.to_dict()
+
+
 def composite_trend(
     run_dates: list[str],
     composite_scores: list[float],

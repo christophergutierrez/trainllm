@@ -5,7 +5,7 @@
     { id: 'training', label: 'Training', icon: '⚡' },
     { id: 'evals', label: 'Evals', icon: '📊' },
     { id: 'runs', label: 'Runs', icon: '📋' },
-    { id: 'bundles', label: 'Bundles', icon: '📦' },
+    { id: 'models', label: 'Models', icon: '🧠' },
     { id: 'diagnostics', label: 'Diag', icon: '🔧' },
   ];
 </script>
