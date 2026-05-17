@@ -54,7 +54,18 @@ manager = ConnectionManager()
 
 @router.websocket("/ws/training")
 async def ws_training(ws: WebSocket):
+    from .config import cfg
     await manager.connect(ws, Channel.TRAINING)
+    # Send existing events so the client gets full history on connect
+    if cfg.events_file.exists():
+        try:
+            with open(cfg.events_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        await ws.send_text(line)
+        except (OSError, Exception):
+            pass
     try:
         while True:
             await ws.receive_text()

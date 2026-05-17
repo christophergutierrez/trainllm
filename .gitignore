@@ -1,3 +1,8 @@
+# Active config (per-run state; see config.example.yaml for reference)
+config.yaml
+config.*.yaml
+!config.example.yaml
+
 # Tool config
 .devtribunal_agents/
 .claude/

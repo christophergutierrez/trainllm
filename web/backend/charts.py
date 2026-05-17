@@ -11,7 +11,7 @@ def loss_curve(
     eval_loss: list[float] | None = None,
     eval_steps: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Build a loss curve figure spec."""
+    """Build a loss curve figure spec (linear by default; frontend toggles log)."""
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=steps, y=train_loss,
@@ -128,7 +128,7 @@ COMPARISON_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec
 
 
 def loss_comparison(models_data: list[dict]) -> dict[str, Any]:
-    """Overlaid loss curves for multiple models."""
+    """Overlaid loss curves for multiple models (log-scale y-axis)."""
     fig = go.Figure()
     for i, m in enumerate(models_data):
         history = m.get("loss_history")
@@ -144,6 +144,7 @@ def loss_comparison(models_data: list[dict]) -> dict[str, Any]:
     fig.update_layout(
         xaxis_title="Step",
         yaxis_title="Loss",
+        yaxis_type="log",
         template="plotly_dark",
         margin=dict(l=50, r=20, t=20, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
