@@ -77,6 +77,7 @@
   }
 
   function modelName(m: any): string {
+    if (!m) return '';
     return m.model_name || m.bundle_name || '';
   }
 
