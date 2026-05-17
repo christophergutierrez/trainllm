@@ -89,19 +89,32 @@ async def ws_training(ws: WebSocket):
 
 @router.websocket("/ws/agent")
 async def ws_agent(ws: WebSocket):
-    from .agent_bridge import get_bridge
+    from .agent_bridge import is_agent_available, write_to_inbox
 
     await manager.connect(ws, Channel.AGENT)
-    bridge = get_bridge()
-    if not bridge.is_alive:
-        await bridge.spawn()
+    available = is_agent_available()
+    await ws.send_text(json.dumps({
+        "type": "agent_status",
+        "status": "available" if available else "disabled",
+    }))
     try:
         while True:
             data = await ws.receive_text()
             msg = json.loads(data)
             content = msg.get("content", "")
+            context = msg.get("context", {})
             if content:
-                asyncio.create_task(bridge.send(content))
+                if not is_agent_available():
+                    await ws.send_text(json.dumps({
+                        "type": "agent_status",
+                        "status": "disabled",
+                    }))
+                else:
+                    msg_id = await write_to_inbox(content, context)
+                    await ws.send_text(json.dumps({
+                        "type": "message_ack",
+                        "id": msg_id,
+                    }))
     except WebSocketDisconnect:
         pass
     finally:

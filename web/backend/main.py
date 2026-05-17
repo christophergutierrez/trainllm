@@ -45,11 +45,32 @@ async def _tail_events():
             pass
 
 
+async def _presence_loop():
+    """Broadcast agent status changes when presence file goes stale or appears."""
+    from .agent_bridge import is_agent_available
+    last_status: str | None = None
+    while True:
+        await asyncio.sleep(10)
+        available = is_agent_available()
+        status = "available" if available else "disabled"
+        if status != last_status:
+            last_status = status
+            await manager.broadcast(Channel.AGENT, {
+                "type": "agent_status",
+                "status": status,
+            })
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_tail_events())
+    from .agent_bridge import start_outbox_poller
+    tail_task = asyncio.create_task(_tail_events())
+    outbox_task = start_outbox_poller()
+    presence_task = asyncio.create_task(_presence_loop())
     yield
-    task.cancel()
+    tail_task.cancel()
+    outbox_task.cancel()
+    presence_task.cancel()
 
 
 app = FastAPI(title="trainLLM Dashboard", version="0.1.0", lifespan=lifespan)

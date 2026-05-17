@@ -27,9 +27,10 @@
   </div>
 
   <div class="header-right">
-    <button class="agent-toggle" on:click={onToggleAgent} title="Toggle Agent Panel">
-      <span class="agent-icon">AI</span>
-      <span class="agent-dot" class:connected={$agentStatus === 'connected'}></span>
+    <button class="agent-toggle" on:click={onToggleAgent}
+            title={$agentStatus === 'disabled' ? 'AI Disabled — no active agent session' : 'Toggle Agent Panel'}>
+      <span class="agent-icon" class:disabled={$agentStatus === 'disabled'}>AI</span>
+      <span class="agent-dot" class:available={$agentStatus === 'available'} class:disabled={$agentStatus === 'disabled'}></span>
     </button>
   </div>
 </header>
@@ -76,9 +77,11 @@
   }
   .agent-toggle:hover { background: #3a3a5a; }
   .agent-icon { font-size: 0.8rem; font-weight: 600; }
+  .agent-icon.disabled { opacity: 0.4; text-decoration: line-through; }
   .agent-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background: #64748b;
   }
-  .agent-dot.connected { background: #10b981; }
+  .agent-dot.available { background: #10b981; }
+  .agent-dot.disabled { background: #475569; }
 </style>

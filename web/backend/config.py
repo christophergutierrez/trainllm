@@ -27,7 +27,18 @@ class WebConfig:
             "TRAINLLM_EVENTS", "/tmp/trainllm_events.jsonl"
         ))
         self.recommendations_file = self.base_dir / "recommendations.yaml"
-        self.agent_provider = os.environ.get("AGENT_PROVIDER", "claude")
+        self.agent_inbox = Path(os.environ.get(
+            "TRAINLLM_AGENT_INBOX", "/tmp/trainllm_agent_inbox.jsonl"
+        ))
+        self.agent_outbox = Path(os.environ.get(
+            "TRAINLLM_AGENT_OUTBOX", "/tmp/trainllm_agent_outbox.jsonl"
+        ))
+        self.agent_presence = Path(os.environ.get(
+            "TRAINLLM_AGENT_PRESENCE", "/tmp/trainllm_agent_presence.json"
+        ))
+        self.agent_presence_ttl = int(os.environ.get(
+            "TRAINLLM_AGENT_PRESENCE_TTL", "300"
+        ))
 
     def _resolve_path(self, key: str) -> Path:
         return self.base_dir / key

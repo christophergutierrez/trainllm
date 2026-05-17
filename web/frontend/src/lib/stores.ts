@@ -17,8 +17,9 @@ export const pipelineErrors = writable<any[]>([]);
 export const pipelineWarnings = writable<any[]>([]);
 
 // Agent state
-export const agentStatus = writable<string>('disconnected');
-export const agentMessages = writable<Array<{ type: string; content: string }>>([]);
+export const agentStatus = writable<'available' | 'disabled' | 'disconnected'>('disconnected');
+export const agentMessages = writable<Array<{ type: string; content: string; id?: string }>>([]);
+export const agentPending = writable<boolean>(false);
 export const recommendations = writable<any[]>([]);
 
 // Active tab
@@ -62,19 +63,24 @@ export function initStores() {
   });
 
   agentWs.onStatus((connected) => {
-    agentStatus.set(connected ? 'connected' : 'disconnected');
+    if (!connected) agentStatus.set('disconnected');
   });
 
   agentWs.subscribe((msg) => {
-    if (msg.type === 'recommendations') {
+    if (msg.type === 'agent_status') {
+      agentStatus.set(msg.status as 'available' | 'disabled');
+    } else if (msg.type === 'message_ack') {
+      agentPending.set(true);
+    } else if (msg.type === 'agent_response') {
+      agentPending.set(false);
+      agentMessages.update(msgs => [...msgs.slice(-50), msg]);
+    } else if (msg.type === 'recommendations') {
       recommendations.set(msg.data || []);
     } else if (msg.type === 'pipeline_alert') {
       agentMessages.update(msgs => [...msgs.slice(-50), {
         type: 'pipeline_alert',
         content: `[${msg.code}] ${msg.message}`,
       }]);
-    } else if (msg.type === 'agent_response' || msg.type === 'agent_thinking') {
-      agentMessages.update(msgs => [...msgs.slice(-50), msg]);
     }
   });
 }
