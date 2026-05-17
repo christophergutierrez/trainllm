@@ -17,7 +17,7 @@ from unsloth.chat_templates import get_chat_template, standardize_sharegpt, trai
 from datasets import load_dataset  # noqa: E402
 from trl import SFTTrainer  # noqa: E402
 from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq  # noqa: E402
-from _callbacks import WSDDecayCallback, EventEmitterCallback  # noqa: E402
+from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_warning  # noqa: E402
 
 
 class PlateauDetector(TrainerCallback):
@@ -46,6 +46,10 @@ class PlateauDetector(TrainerCallback):
         if stalled_for >= self.patience_steps and step > args.warmup_steps * 2:
             print(f"\n*** EARLY STOP: loss plateaued at {self.best_loss:.4f} "
                   f"(step {self.best_step}), no improvement for {stalled_for} steps ***\n")
+            emit_warning("PLATEAU", f"Early stop: loss plateaued at {self.best_loss:.4f} "
+                         f"(step {self.best_step}), stalled for {stalled_for} steps",
+                         {"best_loss": self.best_loss, "best_step": self.best_step,
+                          "stalled_steps": stalled_for})
             control.should_training_stop = True
 
     def on_train_end(self, args, state, control, **kwargs):
@@ -85,6 +89,18 @@ class PlateauDetector(TrainerCallback):
         out = Path(args.output_dir) / "convergence.json"
         out.write_text(json.dumps(summary, indent=2) + "\n")
         print(f"Convergence stats: {out}")
+
+
+def _find_latest_checkpoint(output_dir: Path) -> str | None:
+    """Find the most recent valid checkpoint for resume."""
+    checkpoints = sorted(
+        (p for p in output_dir.glob("checkpoint-*") if p.is_dir()),
+        key=lambda p: int(p.name.split("-")[1]) if p.name.split("-")[1].isdigit() else 0,
+    )
+    for ckpt in reversed(checkpoints):
+        if (ckpt / "trainer_state.json").exists():
+            return str(ckpt)
+    return None
 
 
 def main() -> None:
@@ -222,8 +238,26 @@ def main() -> None:
             response_part="<|im_start|>assistant\n",
         )
 
+    # Check for a valid checkpoint to resume from
+    resume_ckpt = _find_latest_checkpoint(OUTPUT_DIR)
+    if resume_ckpt:
+        emit_warning("RESUMING", f"Resuming from {Path(resume_ckpt).name}")
+        print(f"Resuming from: {resume_ckpt}")
+
     print("Starting training...")
-    trainer.train()
+    try:
+        trainer.train(resume_from_checkpoint=resume_ckpt)
+    except torch.cuda.OutOfMemoryError as e:
+        step = plateau.loss_history[-1][0] if plateau.loss_history else 0
+        emit_error("OOM", f"CUDA out of memory at step {step}", {"step": step, "error": str(e)})
+        print(f"FATAL: OOM at step {step}")
+        gc.collect()
+        torch.cuda.empty_cache()
+        sys.exit(137)
+    except Exception as e:
+        step = plateau.loss_history[-1][0] if plateau.loss_history else 0
+        emit_error("TRAIN_CRASH", str(e), {"step": step, "type": type(e).__name__})
+        raise
 
     if plateau.loss_history:
         actual_steps = plateau.loss_history[-1][0]

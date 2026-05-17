@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { latestLoss, latestEvalLoss, latestStep, latestLR, trainingEvents, evalEvents, isTraining, trainingDone } from '../lib/stores';
+  import { latestLoss, latestEvalLoss, latestStep, latestLR, trainingEvents, evalEvents, isTraining, trainingDone, pipelineErrors, pipelineWarnings } from '../lib/stores';
   import { api } from '../lib/api';
   import KPICard from '../components/KPICard.svelte';
   import ChartContainer from '../components/ChartContainer.svelte';
@@ -125,6 +125,21 @@
 </script>
 
 <div class="training-page">
+  {#if $pipelineErrors.length > 0}
+    {@const err = $pipelineErrors[$pipelineErrors.length - 1]}
+    <div class="status-banner error">
+      <span class="status-icon">&#10007;</span>
+      <span><strong>{err.code}</strong>: {err.message}</span>
+    </div>
+  {/if}
+  {#if $pipelineWarnings.length > 0}
+    {@const warn = $pipelineWarnings[$pipelineWarnings.length - 1]}
+    <div class="status-banner warn">
+      <span class="status-icon">&#9888;</span>
+      <span>{warn.message}</span>
+    </div>
+  {/if}
+
   {#if $trainingDone}
     <div class="status-banner done">
       <span class="status-icon">&#10003;</span>
@@ -346,6 +361,16 @@
     border-radius: 6px;
     font-size: 0.85rem;
     font-weight: 600;
+  }
+  .status-banner.error {
+    background: #450a0a;
+    border: 1px solid #ef4444;
+    color: #fca5a5;
+  }
+  .status-banner.warn {
+    background: #451a03;
+    border: 1px solid #f59e0b;
+    color: #fcd34d;
   }
   .status-banner.done {
     background: #064e3b;

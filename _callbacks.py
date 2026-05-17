@@ -18,6 +18,26 @@ except ImportError:
 EVENTS_FILE = os.environ.get("TRAINLLM_EVENTS", "/tmp/trainllm_events.jsonl")
 
 
+def emit_event(event: dict) -> None:
+    """Write a structured event to the JSONL file (usable without a Trainer instance)."""
+    event["timestamp"] = datetime.now(timezone.utc).isoformat()
+    try:
+        with open(EVENTS_FILE, "a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError:
+        pass
+
+
+def emit_error(code: str, message: str, detail: dict | None = None) -> None:
+    """Emit a structured error event."""
+    emit_event({"event": "error", "code": code, "message": message, "detail": detail or {}})
+
+
+def emit_warning(code: str, message: str, detail: dict | None = None) -> None:
+    """Emit a structured warning event."""
+    emit_event({"event": "warning", "code": code, "message": message, "detail": detail or {}})
+
+
 class EventEmitterCallback(TrainerCallback):
     """Writes structured training events to a JSONL file for the web dashboard."""
 

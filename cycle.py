@@ -39,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import _config
 import emit_synth_status
+from _callbacks import emit_event
 cfg = _config.load()
 
 # ── Paths (all derived from config) ───────────────────────────────────────────
@@ -108,8 +109,24 @@ def log_section(title: str) -> None:
     log(f"{bar}")
 
 
+def _notify_agent(code: str, message: str, detail: dict | None = None) -> None:
+    """Best-effort HTTP POST to backend to alert connected agents."""
+    try:
+        payload = json.dumps({"code": code, "message": message, "detail": detail or {}}).encode()
+        req = urllib.request.Request(
+            "http://localhost:8080/api/diagnostics/notify-agent",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
+
+
 def die(msg: str) -> None:
     log(msg, "FATAL")
+    _notify_agent("FATAL", msg)
     if LOG_PATH:
         log(f"Full log: {LOG_PATH}", "FATAL")
     sys.exit(1)
@@ -151,21 +168,41 @@ class WatchdogProcess:
 
     def _watchdog(self) -> None:
         start = time.time()
+        warned_wall = False
+        warned_silence = False
         while not self._done.is_set():
             time.sleep(5)
             now = time.time()
-            if self.wall_timeout and (now - start) > self.wall_timeout:
-                log(f"[{self.label}] WALL TIMEOUT ({self.wall_timeout}s) — killing", "WARN")
-                self._hung = True
-                if self.proc:
-                    self.proc.kill()
-                return
-            if self.silence_timeout and (now - self._last_output) > self.silence_timeout:
-                log(f"[{self.label}] SILENCE TIMEOUT ({self.silence_timeout}s) — likely hung — killing", "WARN")
-                self._hung = True
-                if self.proc:
-                    self.proc.kill()
-                return
+            wall_elapsed = now - start
+            silence_elapsed = now - self._last_output
+
+            if self.wall_timeout:
+                if not warned_wall and wall_elapsed > self.wall_timeout * 0.8:
+                    warned_wall = True
+                    log(f"[{self.label}] WALL WARNING: 80% of {self.wall_timeout}s timeout elapsed", "WARN")
+                    _notify_agent("WALL_WARNING", f"{self.label} at 80% of wall timeout ({self.wall_timeout}s)",
+                                  {"label": self.label, "elapsed_sec": int(wall_elapsed)})
+                if wall_elapsed > self.wall_timeout:
+                    log(f"[{self.label}] WALL TIMEOUT ({self.wall_timeout}s) — killing", "WARN")
+                    self._hung = True
+                    if self.proc:
+                        self.proc.kill()
+                    return
+
+            if self.silence_timeout:
+                if not warned_silence and silence_elapsed > self.silence_timeout * 0.5:
+                    warned_silence = True
+                    log(f"[{self.label}] SILENCE WARNING: no output for {int(silence_elapsed)}s "
+                        f"(timeout at {self.silence_timeout}s)", "WARN")
+                    _notify_agent("SILENCE_WARNING", f"{self.label} silent for {int(silence_elapsed)}s "
+                                  f"(kill at {self.silence_timeout}s)",
+                                  {"label": self.label, "silent_sec": int(silence_elapsed)})
+                if silence_elapsed > self.silence_timeout:
+                    log(f"[{self.label}] SILENCE TIMEOUT ({self.silence_timeout}s) — likely hung — killing", "WARN")
+                    self._hung = True
+                    if self.proc:
+                        self.proc.kill()
+                    return
 
     def run(self) -> int:
         full_env = {**os.environ, **(self.env or {})}
@@ -542,12 +579,23 @@ def step_train(max_steps: int | None = None, auto_steps: bool = False) -> None:
         log("Could not parse training loss — check log for trainer output", "WARN")
 
     if wp.hung:
+        _notify_agent("TRAINING_HUNG", f"Training hung — no output for {TRAIN_SILENCE_TIMEOUT}s",
+                      {"silence_timeout": TRAIN_SILENCE_TIMEOUT})
         die(
             f"Training hung — no output for {TRAIN_SILENCE_TIMEOUT}s.\n"
             "  Check GPU: nvidia-smi\n"
             "  Check dmesg: sudo dmesg | tail -20\n"
             f"  Full log: {LOG_PATH}"
         )
+
+    if rc == 137 and not os.environ.get("_TRAINLLM_OOM_RETRY"):
+        _notify_agent("OOM_RETRY", "Training OOM — retrying with checkpoint resume after 30s cooldown")
+        log("Training OOM (exit 137) — waiting 30s for GPU cooldown, then retrying with checkpoint resume", "WARN")
+        import time as _time
+        _time.sleep(30)
+        os.environ["_TRAINLLM_OOM_RETRY"] = "1"
+        step_train(max_steps=max_steps, auto_steps=auto_steps)
+        return
 
     if rc != 0:
         die(
@@ -1486,18 +1534,22 @@ def main() -> None:
             elif args.steps is not None:
                 max_steps_override = args.steps
             t0 = time.time()
+            emit_event({"event": "step_start", "step": "train"})
             step_train(max_steps=max_steps_override,
                        auto_steps=args.auto_steps and not args.canary)
+            emit_event({"event": "step_end", "step": "train", "duration_sec": round(time.time() - t0, 1)})
             log(f"Training step completed in {_elapsed(t0)}")
 
         if do_merge:
             # ── Merge path: merge adapters → serve merged model → eval ──
             t0 = time.time()
             step_stop_vllm()
+            emit_event({"event": "step_start", "step": "merge"})
             merged_path = step_merge(
                 density=args.merge_density,
                 adapters=args.merge_adapters,
             )
+            emit_event({"event": "step_end", "step": "merge", "duration_sec": round(time.time() - t0, 1)})
             log(f"Merge step completed in {_elapsed(t0)}")
 
             merge_adapter_names = (
@@ -1561,7 +1613,9 @@ def main() -> None:
 
             if not args.skip_serve:
                 t0 = time.time()
+                emit_event({"event": "step_start", "step": "vllm"})
                 vllm_proc = step_start_vllm(include_checkpoints=do_best_checkpoint)
+                emit_event({"event": "step_end", "step": "vllm", "duration_sec": round(time.time() - t0, 1)})
                 log(f"vLLM startup completed in {_elapsed(t0)}")
             else:
                 log("Skipping vLLM start (--skip-serve) — assuming server is already running")
@@ -1572,10 +1626,12 @@ def main() -> None:
 
             if not args.skip_eval:
                 t0 = time.time()
+                emit_event({"event": "step_start", "step": "eval"})
                 if do_best_checkpoint:
                     ft_path = step_select_best_checkpoint()
                 else:
                     ft_path = step_eval(LORA_MODEL, "fine-tuned")
+                emit_event({"event": "step_end", "step": "eval", "duration_sec": round(time.time() - t0, 1)})
                 log(f"Fine-tuned eval completed in {_elapsed(t0)}")
 
                 if ft_path:

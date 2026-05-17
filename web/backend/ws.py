@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -50,6 +51,17 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+async def notify_agent(code: str, message: str, detail: dict | None = None):
+    """Send a structured alert to all connected agent clients."""
+    await manager.broadcast(Channel.AGENT, {
+        "type": "pipeline_alert",
+        "code": code,
+        "message": message,
+        "detail": detail or {},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 @router.websocket("/ws/training")

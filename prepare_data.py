@@ -420,7 +420,10 @@ def to_sharegpt(record: dict, system_prompt: str, trace_style: str = "linear") -
     return {
         "conversations": [
             {"from": "system", "value": system_prompt},
-            {"from": "human",  "value": record["question"]},
+            {"from": "human",  "value": (
+                f"API Schema:\n{record['schema']}\n\nQuestion: {record['question']}"
+                if record.get("schema") else record["question"]
+            )},
             {"from": "gpt",    "value": format_response(record["api_call"], record.get("thinking"), trace_style)},
         ]
     }
@@ -451,7 +454,10 @@ def to_holdout(record: dict, endpoint_name: str, idx: int, system_prompt: str,
         "label": record["question"],
         "messages": [
             {"role": "system",    "content": system_prompt},
-            {"role": "user",      "content": record["question"]},
+            {"role": "user",      "content": (
+                f"API Schema:\n{record['schema']}\n\nQuestion: {record['question']}"
+                if record.get("schema") else record["question"]
+            )},
             {"role": "assistant", "content": response},
         ],
         "conventions_tested": conventions,

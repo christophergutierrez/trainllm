@@ -2,14 +2,77 @@
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ..config import cfg
 from .. import charts
+from ..ws import notify_agent
 
 router = APIRouter()
+
+
+@router.get("/pipeline-health")
+async def pipeline_health():
+    """Report current pipeline state derived from the events file."""
+    events = _read_events()
+    if not events:
+        return {"status": "idle", "step": 0, "loss": None, "last_event_age_sec": None, "errors": [], "warnings": []}
+
+    last = events[-1]
+    last_ts = last.get("timestamp")
+    age_sec = None
+    if last_ts:
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(last_ts)
+            age_sec = round((datetime.now(timezone.utc) - dt).total_seconds(), 1)
+        except (ValueError, TypeError):
+            pass
+
+    status = "idle"
+    if last.get("event") == "step_end" and last.get("step") == "train":
+        status = "complete"
+    elif any(e.get("event") == "loss" for e in events[-5:]):
+        status = "training"
+    elif any(e.get("event") == "error" for e in events[-10:]):
+        status = "error"
+
+    latest_loss = None
+    latest_step = 0
+    for e in reversed(events):
+        if e.get("event") == "loss":
+            latest_loss = e.get("value")
+            latest_step = e.get("step", 0)
+            break
+
+    errors = [e for e in events if e.get("event") == "error"][-5:]
+    warnings = [e for e in events if e.get("event") == "warning"][-5:]
+
+    return {
+        "status": status,
+        "step": latest_step,
+        "loss": latest_loss,
+        "last_event_age_sec": age_sec,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+class PipelineAlert(BaseModel):
+    code: str
+    message: str
+    detail: dict = {}
+
+
+@router.post("/notify-agent")
+async def notify_agent_endpoint(alert: PipelineAlert):
+    """Push a pipeline alert to all connected agent WebSocket clients."""
+    await notify_agent(alert.code, alert.message, alert.detail)
+    return {"status": "sent"}
 
 
 @router.get("/timing")

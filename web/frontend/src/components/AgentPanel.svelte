@@ -42,7 +42,7 @@
       {/if}
 
       {#each $agentMessages as msg}
-        <div class="message" class:user={msg.type === 'user_command'}>
+        <div class="message" class:user={msg.type === 'user_command'} class:alert={msg.type === 'pipeline_alert'}>
           <span class="msg-content">{msg.content}</span>
         </div>
       {/each}
@@ -117,6 +117,7 @@
     color: #cbd5e1;
   }
   .message.user { background: #1e3a5f; align-self: flex-end; }
+  .message.alert { background: #3b1111; border-left: 3px solid #ef4444; color: #fca5a5; }
   .input-area {
     display: flex;
     gap: 0.4rem;

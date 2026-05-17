@@ -39,6 +39,7 @@ export const api = {
     timingChart: () => get<any>('/api/diagnostics/timing/chart'),
     convergence: () => get<any>('/api/diagnostics/convergence'),
     gpu: () => get<any>('/api/diagnostics/gpu'),
+    pipelineHealth: () => get<any>('/api/diagnostics/pipeline-health'),
   },
   config: {
     get: () => get<any>('/api/config'),
