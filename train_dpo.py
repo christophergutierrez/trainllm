@@ -80,18 +80,9 @@ def main() -> None:
 
     tokenizer = get_chat_template(tokenizer, chat_template=cfg.chat_template)
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=cfg.training.lora_rank,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=cfg.training.lora_alpha,
-        lora_dropout=cfg.training.lora_dropout,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=42,
-        use_rslora=cfg.training.use_rslora,
-    )
+    # SFT_DIR is already a LoRA adapter — enable training on existing layers
+    # rather than adding new ones (Unsloth rejects double-adapter).
+    FastLanguageModel.for_training(model)
 
     # ── Data preparation ──────────────────────────────────────────────────────
 
