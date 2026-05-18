@@ -69,9 +69,10 @@ async def poll_outbox():
                         continue
                     try:
                         msg = json.loads(line)
+                        body = msg.get("content") or msg.get("response") or ""
                         entry = {
                             "type": "agent_response",
-                            "content": msg.get("content", ""),
+                            "content": body,
                             "id": msg.get("id", ""),
                             "timestamp": msg.get("timestamp", ""),
                         }
