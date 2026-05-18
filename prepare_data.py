@@ -38,6 +38,7 @@ Usage:
 
 import argparse
 import json
+import yaml
 import os
 import random
 import re
@@ -585,6 +586,34 @@ def main():
         # Preserve any hand-curated records (canonical-*, mcp-*) from a prior run,
         # updating their system prompt and thinking traces to match current style
         preserved = []
+
+        def _schema_from_record(record: dict) -> str:
+            """Derive a minimal schema string from the api_call embedded in the assistant message."""
+            import re as _re
+            asst = next((m["content"] for m in record.get("messages", []) if m["role"] == "assistant"), "")
+            m = _re.search(r"```json\s*(.+?)\s*```", asst, _re.DOTALL)
+            if not m:
+                return ""
+            try:
+                import json as _json
+                api_call = _json.loads(m.group(1))
+            except Exception:
+                return ""
+            if "steps" in api_call and api_call["steps"]:
+                endpoint = api_call["steps"][0].get("endpoint", "")
+            else:
+                endpoint = api_call.get("endpoint", "")
+            if not endpoint:
+                return ""
+            placeholders = _re.findall(r"\{(\w+)\}", endpoint)
+            lines = [endpoint]
+            if placeholders:
+                lines.append("params: (none)")
+                lines.append("path params: " + ", ".join(f"{p} (integer)" for p in placeholders))
+            else:
+                lines.append("params: see endpoint documentation")
+            return "\n".join(lines)
+
         if out.exists():
             for line in out.read_text().splitlines():
                 if not line.strip():
@@ -594,6 +623,10 @@ def main():
                     for msg in r.get("messages", []):
                         if msg["role"] == "system":
                             msg["content"] = system_prompt
+                        if msg["role"] == "user" and not msg["content"].startswith("API Schema:"):
+                            _schema = _schema_from_record(r)
+                            if _schema:
+                                msg["content"] = f"API Schema:\n{_schema}\n\nQuestion: {msg['content']}"
                         if msg["role"] == "assistant" and "<think>" in msg["content"]:
                             m = re.search(r"<think>\n(.*?)\n</think>", msg["content"], re.DOTALL)
                             if m:
