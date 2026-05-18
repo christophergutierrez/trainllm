@@ -1,6 +1,27 @@
 # trainLLM
 
-A general-purpose QLoRA fine-tuning pipeline for large language models. Trains a LoRA adapter on top of any Hugging Face base model, serves it via vLLM, and evaluates it against a holdout set — all from a single config file.
+A QLoRA fine-tuning pipeline that trains, evaluates, and iterates on LoRA adapters automatically. One config, one command, full cycle: backup → train → serve → eval → report.
+
+## What it does and why
+
+The core problem: fine-tuning an LLM to call APIs correctly requires more than low training loss. The model needs to pick the right endpoint, use the right parameters, and handle edge cases like ID lookups vs. filtered lists — and you need to know *which specific patterns* it gets wrong so you can fix the training data, not just retrain and hope.
+
+The design principle: **evaluate by convention, not just by score.** Every holdout record is tagged with the API convention it tests. The pipeline breaks down results per convention (worst-first), so each training cycle tells you exactly what to fix next.
+
+| Technique | Where | What it does |
+|-----------|-------|--------------|
+| **Convention-based evaluation** | `eval.py` | Each holdout record tags which API pattern it tests (`by-id`, `filtered`, `no-params`, etc.). Reports show per-convention scores worst-first, directly identifying which patterns need more training data |
+| **Composite scoring** | `eval.py` | Three independent axes: structural correctness (endpoint + params, 70%), token similarity (30%), and optional LLM judge (semantic). Separates "right endpoint" from "right format" from "makes sense" |
+| **Multi-checkpoint tournament** | `cycle.py` | Evaluates every saved checkpoint against the holdout and promotes the best one to `final/`. No manual checkpoint selection — the pipeline finds the winner |
+| **Structured thinking traces** | `prepare_data.py` | Training data includes `<think>` reasoning in Question-Option-Criteria format before the JSON output, generated deterministically from the ground-truth answer (not distilled from a teacher model) |
+| **PlateauDetector early stopping** | `train.py` | Monitors loss in real-time and stops when improvement stalls (configurable patience). Canary runs (300-step test → extrapolate → full run) minimize wasted GPU hours |
+| **Synth data feedback loop** | `emit_synth_status.py` | After eval, weak conventions are handed off to [apisynth](https://github.com/christophergutierrez/apisynth) via `synth_status.yaml` for targeted data augmentation |
+| **rsLoRA** | `train.py` | Rank-stabilized scaling (`alpha/sqrt(rank)` instead of `alpha/rank`) — stable training at higher LoRA ranks without tuning alpha per rank |
+| **NEFTune** | `train.py` | Adds noise to embeddings during training (zero cost at inference). Consistent improvement on instruction-following benchmarks |
+| **SimPO preference optimization** | `train_dpo.py` | Optional DPO layer on top of SFT to kill strong priors that supervised training can't override (e.g., always chaining when a single call suffices). Length-normalized reward, no reference model needed |
+| **DARE-TIES model merging** | `merge.py` | Combines multiple LoRA adapters into a single full model, eliminating adapter swaps at inference. Merged models share KV cache across chained API calls |
+
+The automated cycle (`cycle.py`) runs the full loop — backup, train, serve via vLLM, eval every checkpoint, promote the best, generate a report with per-convention deltas against the previous run — then hands off to the synth data pipeline for the next iteration.
 
 ## Quick start
 
