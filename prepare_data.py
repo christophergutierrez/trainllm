@@ -645,6 +645,39 @@ def main():
                                     )
                     preserved.append(json.dumps(r))
 
+        # Load broad holdout records (from holdout_broad.jsonl files in endpoint dirs)
+        broad = []
+        broad_dir = input_dir
+        for broad_file in sorted(broad_dir.glob("*/holdout_broad.jsonl")):
+            ep_name = broad_file.parent.name
+            for line in broad_file.read_text().splitlines():
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                question = r.get("question", "")
+                api_call = r.get("api_call", {})
+                conventions = r.get("conventions_tested", [ep_name, "broad-holdout"])
+                if "broad-holdout" not in conventions:
+                    conventions = conventions + ["broad-holdout"]
+                # Build holdout-format record with schema injection
+                schema = _schema_from_record({"messages": [
+                    {"role": "assistant", "content": f"```json\n{json.dumps(api_call)}\n```"}
+                ]})
+                user_content = (
+                    f"API Schema:\n{schema}\n\nQuestion: {question}"
+                    if schema else question
+                )
+                broad.append(json.dumps({
+                    "id": f"broad-{ep_name}-{len(broad):04d}",
+                    "label": question,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                        {"role": "assistant", "content": ""},
+                    ],
+                    "conventions_tested": conventions,
+                }))
+
         ep_counters: dict[str, int] = {}
         tmp_out = out.with_suffix(".tmp")
         with open(tmp_out, "w") as f:
@@ -654,10 +687,12 @@ def main():
                 idx = ep_counters.get(ep, 0)
                 ep_counters[ep] = idx + 1
                 f.write(json.dumps(to_holdout(record, ep, idx, system_prompt, trace_style)) + "\n")
+            for line in broad:
+                f.write(line + "\n")
         os.replace(tmp_out, out)
         kept = len(preserved)
-        total_holdout = len(holdout_items) + kept
-        print(f"  Holdout:   {len(holdout_items)} generated + {kept} preserved → {total_holdout} total → {out}")
+        total_holdout = len(holdout_items) + kept + len(broad)
+        print(f"  Holdout:   {len(holdout_items)} generated + {kept} preserved + {len(broad)} broad → {total_holdout} total → {out}")
 
         # Format consistency check
         n_qoc = n_linear = n_other = 0
