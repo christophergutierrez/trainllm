@@ -165,7 +165,9 @@
         <KPICard
           label="Eval Loss"
           value={$latestEvalLoss?.toFixed(4) ?? '—'}
-          hint="Validation loss on held-out 5% split. Rising eval loss while train loss drops signals overfitting."
+          hint={$latestEvalLoss == null
+            ? "No eval yet — eval runs after each checkpoint save (every save_steps). First eval at step 300."
+            : "Validation loss on held-out 5% split. Rising eval loss while train loss drops signals overfitting."}
         />
         <KPICard
           label="Step"
