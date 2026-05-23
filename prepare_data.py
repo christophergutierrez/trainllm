@@ -673,7 +673,7 @@ def main():
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content},
-                        {"role": "assistant", "content": ""},
+                        {"role": "assistant", "content": format_response(api_call, None, trace_style)},
                     ],
                     "conventions_tested": conventions,
                 }))

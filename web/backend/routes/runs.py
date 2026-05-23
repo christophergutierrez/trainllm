@@ -114,41 +114,69 @@ def _find_convergence(run_id: str) -> dict | None:
         if not adapter_dir.exists():
             continue
 
-        conv_data = None
-        for subdir in [".", "final"]:
+        # Build search order: most recent final-* dir first, then final, then .
+        versioned = sorted(
+            adapter_dir.glob("final-*"),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        subdirs = [v.name for v in versioned] + ["final", "."]
+
+        # Prefer trainer_state.json from versioned/final dirs (freshest data)
+        parsed = _extract_from_subdirs(adapter_dir, subdirs)
+        if parsed:
+            return parsed
+
+        # Fall back to convergence.json files
+        for subdir in subdirs:
             conv_path = adapter_dir / subdir / "convergence.json"
             if conv_path.exists():
                 try:
-                    conv_data = json.loads(conv_path.read_text())
-                    break
+                    return json.loads(conv_path.read_text())
                 except json.JSONDecodeError:
                     pass
-
-        if conv_data:
-            if "loss_history" not in conv_data:
-                loss_history = _extract_loss_history(adapter_dir)
-                if loss_history:
-                    conv_data["loss_history"] = loss_history
-            return conv_data
 
     return None
 
 
-def _extract_loss_history(lora_dir: Path) -> list:
-    """Extract loss history from the latest trainer_state.json checkpoint."""
-    checkpoints = sorted(lora_dir.glob("checkpoint-*"), key=lambda p: p.name)
-    if not checkpoints:
-        return []
-    state_file = checkpoints[-1] / "trainer_state.json"
-    if not state_file.exists():
-        return []
+def _extract_from_subdirs(lora_dir: Path, subdirs: list[str]) -> dict | None:
+    """Extract convergence data from trainer_state.json, searching subdirs in priority order."""
+    for subdir in subdirs:
+        target = lora_dir / subdir
+        if not target.is_dir():
+            continue
+        for state_file in _find_trainer_states(target):
+            result = _parse_trainer_state(state_file)
+            if result:
+                return result
+    return None
+
+
+def _find_trainer_states(directory: Path):
+    direct = directory / "trainer_state.json"
+    if direct.exists():
+        yield direct
+    for ckpt in sorted(directory.glob("checkpoint-*"), key=lambda p: p.name, reverse=True):
+        f = ckpt / "trainer_state.json"
+        if f.exists():
+            yield f
+
+
+def _parse_trainer_state(state_file: Path) -> dict | None:
     try:
         state = json.loads(state_file.read_text())
         log_history = state.get("log_history", [])
-        return [
-            [entry["step"], entry["loss"]]
-            for entry in log_history
-            if "loss" in entry
-        ]
+        loss_entries = [e for e in log_history if "loss" in e]
+        if not loss_entries:
+            return None
+        last = loss_entries[-1]
+        return {
+            "first_loss": loss_entries[0]["loss"],
+            "final_loss": last["loss"],
+            "total_steps": last["step"],
+            "final_lr": last.get("learning_rate"),
+            "final_epoch": last.get("epoch"),
+            "loss_history": [[e["step"], e["loss"]] for e in loss_entries],
+        }
     except (json.JSONDecodeError, KeyError):
-        return []
+        return None

@@ -45,6 +45,9 @@ export const api = {
     get: () => get<any>('/api/config'),
     training: () => get<any>('/api/config/training'),
   },
+  training: {
+    state: () => get<any>('/api/training/state'),
+  },
   cycle: {
     status: () => get<any>('/api/cycle/status'),
     start: (opts?: { skip_train?: boolean; skip_judge?: boolean }) =>

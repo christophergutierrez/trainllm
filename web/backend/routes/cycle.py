@@ -1,25 +1,32 @@
 """Endpoints for triggering pipeline runs."""
 
-import asyncio
+import os
+import signal
 import subprocess
 import sys
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from ..config import cfg
-from ..ws import manager, Channel
 
 router = APIRouter()
 
-_active_process: subprocess.Popen | None = None
+_active_pid: int | None = None
+
+
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 @router.post("/start")
 async def start_cycle(skip_train: bool = False, skip_judge: bool = False):
-    """Start a cycle.py run as a subprocess."""
-    global _active_process
-    if _active_process and _active_process.poll() is None:
+    """Start a cycle.py run as a detached subprocess."""
+    global _active_pid
+    if _active_pid and _is_pid_alive(_active_pid):
         raise HTTPException(409, "A cycle is already running")
 
     cycle_script = cfg.base_dir / "cycle.py"
@@ -32,53 +39,37 @@ async def start_cycle(skip_train: bool = False, skip_judge: bool = False):
     if skip_judge:
         cmd.append("--skip-judge")
 
-    _active_process = subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
         cwd=str(cfg.base_dir),
     )
+    _active_pid = proc.pid
 
-    asyncio.get_event_loop().create_task(_stream_output(_active_process))
-
-    return {"status": "started", "pid": _active_process.pid}
+    return {"status": "started", "pid": proc.pid}
 
 
 @router.get("/status")
 async def cycle_status():
     """Check if a cycle is currently running."""
-    if _active_process is None:
+    global _active_pid
+    if _active_pid is None:
         return {"running": False}
-    poll = _active_process.poll()
-    if poll is None:
-        return {"running": True, "pid": _active_process.pid}
-    return {"running": False, "exit_code": poll}
+    if _is_pid_alive(_active_pid):
+        return {"running": True, "pid": _active_pid}
+    _active_pid = None
+    return {"running": False}
 
 
 @router.post("/stop")
 async def stop_cycle():
     """Stop a running cycle."""
-    global _active_process
-    if _active_process is None or _active_process.poll() is not None:
+    global _active_pid
+    if _active_pid is None or not _is_pid_alive(_active_pid):
         raise HTTPException(404, "No cycle is running")
-    _active_process.terminate()
+    os.killpg(os.getpgid(_active_pid), signal.SIGTERM)
+    _active_pid = None
     return {"status": "terminated"}
-
-
-async def _stream_output(proc: subprocess.Popen):
-    """Stream subprocess output to WebSocket clients."""
-    loop = asyncio.get_event_loop()
-    while True:
-        line = await loop.run_in_executor(None, proc.stdout.readline)
-        if not line and proc.poll() is not None:
-            break
-        if line:
-            await manager.broadcast(Channel.TRAINING, {
-                "type": "log",
-                "content": line.rstrip(),
-            })
-    await manager.broadcast(Channel.TRAINING, {
-        "type": "cycle_end",
-        "exit_code": proc.returncode,
-    })

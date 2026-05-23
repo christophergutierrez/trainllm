@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import cfg
-from .routes import runs, evals, diagnostics, pipeline_config, cycle, models, agent
+from .routes import runs, evals, diagnostics, pipeline_config, cycle, models, agent, training_state
 from .ws import router as ws_router, manager, Channel
 
 async def _tail_events():
@@ -90,6 +90,7 @@ app.include_router(pipeline_config.router, prefix="/api/config", tags=["config"]
 app.include_router(cycle.router, prefix="/api/cycle", tags=["cycle"])
 app.include_router(models.router, prefix="/api/models", tags=["models"])
 app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
+app.include_router(training_state.router, prefix="/api/training/state", tags=["training"])
 app.include_router(ws_router)
 
 

@@ -1,120 +1,42 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { latestLoss, latestEvalLoss, latestStep, latestLR, trainingEvents, evalEvents, isTraining, trainingDone, pipelineErrors, pipelineWarnings } from '../lib/stores';
   import { api } from '../lib/api';
   import KPICard from '../components/KPICard.svelte';
   import ChartContainer from '../components/ChartContainer.svelte';
   import Hint from '../components/Hint.svelte';
 
-  let historicChart: any = null;
+  let s: any = {};
   let logScale = false;
-  let maxSteps = 0;
   let runConfig: any = null;
   let gpu: any = null;
+  let pollTimer: ReturnType<typeof setInterval>;
   let gpuTimer: ReturnType<typeof setInterval>;
+
+  async function pollState() {
+    try { s = await api.training.state(); } catch {}
+  }
 
   async function pollGpu() {
     try { gpu = (await api.diagnostics.gpu()).gpus?.[0] ?? null; } catch {}
   }
 
   onMount(async () => {
-    try {
-      runConfig = await api.config.get();
-      maxSteps = runConfig?.training?.max_steps || 0;
-    } catch {}
-    try {
-      const runs = await api.runs.list();
-      if (runs.length > 0) {
-        historicChart = await api.runs.lossChart(runs[0].id);
-      }
-    } catch {}
+    await pollState();
+    try { runConfig = await api.config.get(); } catch {}
     pollGpu();
+    pollTimer = setInterval(pollState, 3000);
     gpuTimer = setInterval(pollGpu, 5000);
   });
 
-  onDestroy(() => clearInterval(gpuTimer));
+  onDestroy(() => { clearInterval(pollTimer); clearInterval(gpuTimer); });
 
-  $: liveChart = $trainingEvents.length >= 2 ? buildLiveChart($trainingEvents, $evalEvents, logScale) : null;
-  $: displayChart = liveChart || applyScale(historicChart, logScale);
-
-  function buildLiveChart(events: any[], evals: any[], useLog: boolean) {
-    const steps = events.map(e => e.step).filter(Boolean);
-    const losses = events.map(e => e.value).filter((v: any) => v != null);
-    if (steps.length < 2) return null;
-    const traces: any[] = [{
-      x: steps,
-      y: losses,
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Train Loss',
-      line: { color: '#3b82f6', width: 2 },
-    }];
-    if (evals.length > 0) {
-      traces.push({
-        x: evals.map(e => e.step),
-        y: evals.map(e => e.value),
-        type: 'scatter',
-        mode: 'lines+markers',
-        name: 'Eval Loss',
-        line: { color: '#ef4444', width: 2, dash: 'dot' },
-        marker: { size: 6 },
-      });
-    }
-    return {
-      data: traces,
-      layout: {
-        xaxis: { title: { text: 'Step' }, color: '#94a3b8', gridcolor: '#2a2a4a' },
-        yaxis: { title: { text: 'Loss' }, type: useLog ? 'log' : 'linear', color: '#94a3b8', gridcolor: '#2a2a4a' },
-        template: 'plotly_dark',
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(0,0,0,0)',
-        margin: { l: 50, r: 20, t: 20, b: 40 },
-        height: 300,
-        legend: { orientation: 'h', yanchor: 'bottom', y: 1.02 },
-      },
-    };
-  }
-
-  function applyScale(chart: any, useLog: boolean) {
+  $: displayChart = (() => {
+    const chart = s.chart;
     if (!chart) return null;
-    return {
-      ...chart,
-      layout: {
-        ...chart.layout,
-        yaxis: { ...(chart.layout?.yaxis || {}), type: useLog ? 'log' : 'linear' },
-      },
-    };
-  }
-
-  $: secPerStep = (() => {
-    const evts = $trainingEvents.filter((e: any) => e.step && e.timestamp);
-    if (evts.length < 2) return null;
-    const last = evts[evts.length - 1];
-    const prev = evts[evts.length - 2];
-    const dt = (new Date(last.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 1000;
-    const ds = last.step - prev.step;
-    if (ds <= 0) return null;
-    return dt / ds;
+    return { ...chart, layout: { ...chart.layout, yaxis: { ...(chart.layout?.yaxis || {}), type: logScale ? 'log' : 'linear' } } };
   })();
 
-  $: progress = (maxSteps > 0 && $latestStep > 0)
-    ? Math.round(($latestStep / maxSteps) * 100)
-    : null;
-
-  $: elapsed = (() => {
-    const evts = $trainingEvents.filter((e: any) => e.timestamp);
-    if (evts.length < 2) return null;
-    const first = new Date(evts[0].timestamp).getTime();
-    const last = new Date(evts[evts.length - 1].timestamp).getTime();
-    return (last - first) / 1000;
-  })();
-
-  $: etaMax = (() => {
-    if (!secPerStep || !maxSteps || !$latestStep) return null;
-    return (maxSteps - $latestStep) * secPerStep;
-  })();
-
-  function fmtDuration(seconds: number | null): string {
+  function fmtDuration(seconds: number | null | undefined): string {
     if (seconds == null) return '—';
     if (seconds < 60) return `${Math.round(seconds)}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -122,33 +44,51 @@
     const m = Math.round((seconds % 3600) / 60);
     return `${h}h ${m}m`;
   }
+
+  function fmtLoss(v: number | null | undefined): string {
+    return v != null ? v.toFixed(4) : '—';
+  }
+
+  function fmtLR(v: number | null | undefined): string {
+    return v != null ? v.toExponential(1) : '—';
+  }
 </script>
 
 <div class="training-page">
-  {#if $pipelineErrors.length > 0}
-    {@const err = $pipelineErrors[$pipelineErrors.length - 1]}
+  {#if s.errors?.length > 0}
+    {@const err = s.errors[s.errors.length - 1]}
     <div class="status-banner error">
       <span class="status-icon">&#10007;</span>
       <span><strong>{err.code}</strong>: {err.message}</span>
     </div>
   {/if}
-  {#if $pipelineWarnings.length > 0}
-    {@const warn = $pipelineWarnings[$pipelineWarnings.length - 1]}
+  {#if s.warnings?.length > 0}
+    {@const warn = s.warnings[s.warnings.length - 1]}
     <div class="status-banner warn">
       <span class="status-icon">&#9888;</span>
       <span>{warn.message}</span>
     </div>
   {/if}
 
-  {#if $trainingDone}
+  {#if s.status === 'complete'}
     <div class="status-banner done">
       <span class="status-icon">&#10003;</span>
-      <span>Training Complete — stopped at step {$latestStep} (early stop)</span>
+      <span>Training Complete — stopped at step {s.step}</span>
     </div>
-  {:else if $isTraining}
+  {:else if s.status === 'training'}
     <div class="status-banner active">
       <span class="status-dot"></span>
-      <span>Training in progress</span>
+      <span>Training in progress — step {s.step}</span>
+    </div>
+  {:else if s.status === 'starting'}
+    <div class="status-banner active">
+      <span class="status-dot"></span>
+      <span>Loading model...</span>
+    </div>
+  {:else if s.status === 'idle' && s.source === 'historical'}
+    <div class="status-banner idle">
+      <span class="status-icon">&#9679;</span>
+      <span>Idle — showing last run</span>
     </div>
   {/if}
 
@@ -158,26 +98,24 @@
       <div class="kpi-row">
         <KPICard
           label="Train Loss"
-          value={$latestLoss?.toFixed(4) ?? '—'}
-          trend={$isTraining ? 'down' : null}
-          hint="Current training loss at the latest logged step"
+          value={fmtLoss(s.loss)}
+          trend={s.status === 'training' ? 'down' : null}
+          hint="Training loss at the latest logged step"
         />
         <KPICard
-          label="Eval Loss"
-          value={$latestEvalLoss?.toFixed(4) ?? '—'}
-          hint={$latestEvalLoss == null
-            ? "No eval yet — eval runs after each checkpoint save (every save_steps). First eval at step 300."
-            : "Validation loss on held-out 5% split. Rising eval loss while train loss drops signals overfitting."}
+          label={s.eval_score != null ? "Eval Score" : "Eval Score"}
+          value={s.eval_score != null ? (s.eval_score * 100).toFixed(1) + '%' : '—'}
+          hint={s.eval_score != null ? "Average eval score from the last completed run" : "Available after eval completes"}
         />
         <KPICard
           label="Step"
-          value={$latestStep || '—'}
-          hint="Gradient updates completed so far"
+          value={s.step || '—'}
+          hint="Gradient updates completed"
         />
         <KPICard
           label="Progress"
-          value={progress != null ? `${progress}%` : '—'}
-          hint="Percent of max_steps completed. Training may end earlier — early stopping halts when loss plateaus."
+          value={s.progress_pct != null ? s.progress_pct + '%' : '—'}
+          hint="Percent of max_steps completed. Early stopping may end sooner."
         />
       </div>
     </div>
@@ -186,23 +124,23 @@
       <div class="kpi-row">
         <KPICard
           label="s/step"
-          value={secPerStep ? secPerStep.toFixed(1) : '—'}
-          hint="Seconds per gradient update (wall-clock). Lower is faster."
+          value={s.sec_per_step != null ? s.sec_per_step.toFixed(1) : '—'}
+          hint="Seconds per gradient update (wall-clock)"
         />
         <KPICard
           label="LR"
-          value={$latestLR ? $latestLR.toExponential(1) : '—'}
-          hint="Current learning rate from the cosine scheduler"
+          value={fmtLR(s.lr)}
+          hint="Current learning rate"
         />
         <KPICard
           label="Elapsed"
-          value={fmtDuration(elapsed)}
-          hint="Wall-clock time since training steps began (excludes model loading)"
+          value={fmtDuration(s.elapsed_sec)}
+          hint="Wall-clock time since training steps began"
         />
         <KPICard
           label="Remaining"
-          value={fmtDuration(etaMax)}
-          hint="Worst-case time left assuming all max_steps run. Early stopping typically ends sooner."
+          value={fmtDuration(s.remaining_sec)}
+          hint="Estimated time left based on current pace"
         />
       </div>
     </div>
@@ -213,7 +151,7 @@
       <div class="chart-header">
         <span class="chart-title">Loss Curve</span>
         <div class="chart-controls">
-          {#if liveChart}
+          {#if s.source === 'live'}
             <span class="live-badge">LIVE</span>
           {/if}
           <button class="scale-toggle" on:click={() => logScale = !logScale}>
@@ -383,6 +321,11 @@
     background: #1e3a5f;
     border: 1px solid #3b82f6;
     color: #93c5fd;
+  }
+  .status-banner.idle {
+    background: #1e293b;
+    border: 1px solid #475569;
+    color: #94a3b8;
   }
   .status-icon { font-size: 1.1rem; }
   .status-dot {
