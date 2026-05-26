@@ -550,7 +550,8 @@ See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for tracked issues, architectural debt, a
 
 ## See also
 
-- [Architecture](docs/architecture.md) — detailed design notes on the pipeline, training approach, and evaluation.
+- [Architecture](docs/architecture.md) — detailed design notes on the pipeline, training approach, and evaluation. Video: [Architecting TrainLLM: The Lifecycle of an API Agent](https://youtu.be/UsfuR2neibI)
+- [The Complete Loop Inside TrainLLM](https://youtu.be/Ki2l9CfWMsc) — video walkthrough of the full pipeline cycle.
 - [Troubleshooting](docs/troubleshooting.md) — common failures and how to fix them.
 - [Data Preparation](docs/data-preparation.md) — end-to-end guide from raw endpoint data to training JSONL.
 - [DPO Fine-Tuning](docs/dpo.md) — when and how to use Direct Preference Optimization.
