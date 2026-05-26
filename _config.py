@@ -67,6 +67,33 @@ def _parse_training(raw_training: dict) -> SimpleNamespace:
     return SimpleNamespace(**result)
 
 
+def _parse_scoring(raw: dict | None) -> SimpleNamespace:
+    if raw is None:
+        raw = {}
+    mode = raw.get("mode", "json")
+    if mode not in ("json", "text"):
+        raise SystemExit(f"config.yaml: scoring.mode must be 'json' or 'text', got {mode!r}")
+    cw = raw.get("composite_weights", {})
+    cw_judge = raw.get("composite_weights_judge", {})
+    return SimpleNamespace(
+        mode=mode,
+        primary_key=raw.get("primary_key", "endpoint"),
+        detail_key=raw.get("detail_key", "params"),
+        multi_step_key=raw.get("multi_step_key", "steps"),
+        primary_weight=float(raw.get("primary_weight", 0.4)),
+        detail_weight=float(raw.get("detail_weight", 0.6)),
+        composite_weights=SimpleNamespace(
+            similarity=float(cw.get("similarity", 0.3)),
+            structural=float(cw.get("structural", 0.7)),
+        ),
+        composite_weights_judge=SimpleNamespace(
+            similarity=float(cw_judge.get("similarity", 0.2)),
+            structural=float(cw_judge.get("structural", 0.5)),
+            judge=float(cw_judge.get("judge", 0.3)),
+        ),
+    )
+
+
 def load(config_path: Path | None = None) -> SimpleNamespace:
     try:
         import yaml  # type: ignore[import-untyped]
@@ -149,6 +176,7 @@ def load(config_path: Path | None = None) -> SimpleNamespace:
             training = _parse_training(raw.get("training", {})),
 
             merge = merge_cfg,
+            scoring = _parse_scoring(raw.get("scoring")),
 
             vllm_url                  = f"http://localhost:{vllm_port}",
             vllm_port                 = vllm_port,

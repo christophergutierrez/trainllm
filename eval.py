@@ -53,13 +53,13 @@ def query(client, model: str, record: dict) -> tuple[str, str, float, dict]:
     return generated, expected, similarity(expected, generated), diag
 
 
-def _eval_one(client, model: str, i: int, r: dict) -> dict:
+def _eval_one(client, model: str, i: int, r: dict, scoring=None) -> dict:
     rid = r.get("id", str(i))
     label = r.get("label", rid)
     try:
         generated, expected, score, diag = query(client, model, r)
-        struct = structural_score(expected, generated)
-        comp = composite_score(score, struct)
+        struct = structural_score(expected, generated, scoring=scoring)
+        comp = composite_score(score, struct, scoring=scoring)
         b = band(comp)
         return {
             "id":                 rid,
@@ -112,11 +112,12 @@ def main() -> None:
     print("=" * 60)
 
     EVAL_WORKERS = int(os.environ.get("EVAL_WORKERS", "8"))
+    scoring = cfg.scoring
 
     print(f"Workers: {EVAL_WORKERS}")
     results = [None] * len(records)
     with ThreadPoolExecutor(max_workers=EVAL_WORKERS) as pool:
-        futures = {pool.submit(_eval_one, client, MODEL, i, r): i for i, r in enumerate(records)}
+        futures = {pool.submit(_eval_one, client, MODEL, i, r, scoring): i for i, r in enumerate(records)}
         for fut in as_completed(futures):
             idx = futures[fut]
             try:
@@ -226,7 +227,7 @@ def main() -> None:
 
         if json_avg - avg > 0.03:
             w(f"> **Diagnostic:** JSON-only avg ({json_avg:.2f}) is significantly higher than "
-              f"full-text avg ({avg:.2f}). This usually means the model's API calls are correct "
+              f"full-text avg ({avg:.2f}). This usually means the model's JSON output is correct "
               f"but the thinking traces differ from holdout expectations (format mismatch, not a "
               f"capability issue).")
             w()

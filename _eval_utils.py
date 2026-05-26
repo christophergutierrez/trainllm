@@ -3,8 +3,20 @@
 import json
 import re
 from difflib import SequenceMatcher
+from types import SimpleNamespace
 
 THRESHOLDS = {"excellent": 0.8, "good": 0.6, "partial": 0.4}
+
+DEFAULT_SCORING = SimpleNamespace(
+    mode="json",
+    primary_key="endpoint",
+    detail_key="params",
+    multi_step_key="steps",
+    primary_weight=0.4,
+    detail_weight=0.6,
+    composite_weights=SimpleNamespace(similarity=0.3, structural=0.7),
+    composite_weights_judge=SimpleNamespace(similarity=0.2, structural=0.5, judge=0.3),
+)
 
 
 def band(score: float) -> str:
@@ -78,21 +90,30 @@ def _param_score(expected_params: dict, generated_params: dict) -> float:
     return total / len(expected_params)
 
 
-def _score_single_call(expected: dict, generated: dict) -> float:
-    exp_endpoint = str(expected.get("endpoint", ""))
-    gen_endpoint = str(generated.get("endpoint", ""))
-    endpoint_score = 1.0 if exp_endpoint == gen_endpoint else 0.0
-    exp_params = expected.get("params") or {}
-    gen_params = generated.get("params") or {}
-    return 0.4 * endpoint_score + 0.6 * _param_score(exp_params, gen_params)
+def _score_single_call(expected: dict, generated: dict,
+                       scoring: SimpleNamespace | None = None) -> float:
+    s = scoring or DEFAULT_SCORING
+    exp_primary = str(expected.get(s.primary_key, ""))
+    gen_primary = str(generated.get(s.primary_key, ""))
+    primary_score = 1.0 if exp_primary == gen_primary else 0.0
+    exp_detail = expected.get(s.detail_key) or {}
+    gen_detail = generated.get(s.detail_key) or {}
+    return s.primary_weight * primary_score + s.detail_weight * _param_score(exp_detail, gen_detail)
 
 
-def structural_score(expected: str, generated: str) -> float:
-    """Score API responses by structural JSON comparison (endpoint + params).
+def structural_score(expected: str, generated: str,
+                     scoring: SimpleNamespace | None = None) -> float:
+    """Score responses by structural JSON comparison.
 
+    The keys compared are configurable via the scoring config (default: endpoint + params).
+    In "text" mode, always uses text similarity — no JSON parsing.
     Returns similarity fallback when neither side has JSON (e.g. free-text responses).
     Returns 0.0 when expected has JSON but generated does not.
     """
+    s = scoring or DEFAULT_SCORING
+    if s.mode == "text":
+        return similarity(expected, generated)
+
     exp_json = _extract_json(expected)
     gen_json = _extract_json(generated)
 
@@ -102,22 +123,27 @@ def structural_score(expected: str, generated: str) -> float:
     if gen_json is None:
         return 0.0
 
-    if "steps" in exp_json or "steps" in gen_json:
-        exp_steps = exp_json.get("steps") or [exp_json]
-        gen_steps = gen_json.get("steps") or [gen_json]
+    step_key = s.multi_step_key
+    if step_key in exp_json or step_key in gen_json:
+        exp_steps = exp_json.get(step_key) or [exp_json]
+        gen_steps = gen_json.get(step_key) or [gen_json]
         if not exp_steps:
             return 1.0
         scores = [
-            _score_single_call(exp_step, gen_steps[i]) if i < len(gen_steps) else 0.0
+            _score_single_call(exp_step, gen_steps[i], s) if i < len(gen_steps) else 0.0
             for i, exp_step in enumerate(exp_steps)
         ]
         return sum(scores) / len(scores)
 
-    return _score_single_call(exp_json, gen_json)
+    return _score_single_call(exp_json, gen_json, s)
 
 
-def composite_score(sim: float, structural: float, judge: float | None = None) -> float:
+def composite_score(sim: float, structural: float, judge: float | None = None,
+                    scoring: SimpleNamespace | None = None) -> float:
     """Weighted composite of similarity, structural, and optional LLM-judge scores."""
+    s = scoring or DEFAULT_SCORING
     if judge is None:
-        return sim * 0.3 + structural * 0.7
-    return sim * 0.2 + structural * 0.5 + judge * 0.3
+        w = s.composite_weights
+        return sim * w.similarity + structural * w.structural
+    w = s.composite_weights_judge
+    return sim * w.similarity + structural * w.structural + judge * w.judge

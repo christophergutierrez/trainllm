@@ -1,8 +1,10 @@
 # trainLLM
 
-Teach an LLM your API — then prove it learned.
+Fine-tune an LLM on structured tasks — then prove it learned.
 
-If you're fine-tuning a model to call your API and evaluating by eyeballing outputs, this replaces that with a repeatable, measurable loop. One config, one command, full cycle — with a [real-time web dashboard](#web-dashboard) to watch it happen.
+If you're fine-tuning a model and evaluating by eyeballing outputs, this replaces that with a repeatable, measurable loop. One config, one command, full cycle — with a [real-time web dashboard](#web-dashboard) to watch it happen.
+
+The pipeline was built for API-calling agents (teaching models to pick the right endpoint, use the right parameters, handle edge cases) and that remains its primary use case. But the training loop, multi-checkpoint evaluation, and convention-based reporting work for any structured-prediction task where the output is JSON — function calling, tool use, SQL generation, or anything with a scorable structure.
 
 > **New here?** Watch these first:
 > - [Architecting TrainLLM: The Lifecycle of an API Agent](https://youtu.be/UsfuR2neibI) — why the pipeline is built this way
@@ -10,11 +12,11 @@ If you're fine-tuning a model to call your API and evaluating by eyeballing outp
 
 ## What it does
 
-You give it training data (API calls with expected outputs) and a holdout set. It runs the full loop automatically:
+You give it training data (structured input/output pairs) and a holdout set. It runs the full loop automatically:
 
 1. **Train** — QLoRA fine-tuning with early stopping, canary runs, and checkpoint saving
 2. **Evaluate** — every checkpoint is tested against the holdout; the best one wins
-3. **Report** — per-convention breakdown showing which API patterns improved and which still fail
+3. **Report** — per-convention breakdown showing which patterns improved and which still fail
 4. **Iterate** — weak patterns are handed off for targeted data augmentation, then you run it again
 
 The result: instead of "loss went down, maybe it's better," you get a per-convention breakdown like this:
@@ -45,17 +47,18 @@ This runs: backup → train → serve (vLLM) → eval (fine-tuned + base) → re
 
 ## Why convention-based evaluation
 
-Fine-tuning an LLM to call APIs correctly requires more than low training loss. The model needs to pick the right endpoint, use the right parameters, and handle edge cases like ID lookups vs. filtered lists — and you need to know *which specific patterns* it gets wrong so you can fix the training data, not just retrain and hope.
+Fine-tuning an LLM to produce structured output correctly requires more than low training loss. The model needs to pick the right action, use the right parameters, and handle edge cases — and you need to know *which specific patterns* it gets wrong so you can fix the training data, not just retrain and hope.
 
-The design principle: **evaluate by convention, not just by score.** Every holdout record is tagged with the API convention it tests. The pipeline breaks down results per convention (worst-first), so each training cycle tells you exactly what to fix next.
+The design principle: **evaluate by convention, not just by score.** Every holdout record is tagged with the convention it tests (e.g. `by-id`, `filtered`, `no-params` for APIs; or `select-join`, `aggregate`, `subquery` for SQL — whatever categories matter for your task). The pipeline breaks down results per convention (worst-first), so each training cycle tells you exactly what to fix next.
 
 <details>
 <summary><strong>Techniques</strong> — what's under the hood</summary>
 
 | Technique | What it does |
 |-----------|--------------|
-| **Convention-based evaluation** | Each holdout record tags which API pattern it tests (`by-id`, `filtered`, `no-params`, etc.). Reports show per-convention scores worst-first, directly identifying which patterns need more training data |
-| **Composite scoring** | Three independent axes: structural correctness (endpoint + params, 70%), token similarity (30%), and optional LLM judge (semantic). Separates "right endpoint" from "right format" from "makes sense" |
+| **Convention-based evaluation** | Each holdout record tags which pattern it tests. Reports show per-convention scores worst-first, directly identifying which patterns need more training data |
+| **Configurable structural scoring** | Compares JSON output by primary key (exact match) + detail key (key-presence and value match), with configurable weights. Defaults to API scoring (`endpoint` + `params`); remap keys for function calling, tool use, SQL, etc. Text-only mode available for free-form output |
+| **Composite scoring** | Three independent axes: structural correctness (default 70%), token similarity (default 30%), and optional LLM judge (semantic). All weights configurable in `config.yaml` |
 | **Multi-checkpoint tournament** | Evaluates every saved checkpoint against the holdout and promotes the best one. No manual checkpoint selection — the pipeline finds the winner |
 | **Structured thinking traces** | Training data includes `<think>` reasoning before the JSON output, generated deterministically from the ground-truth answer (not distilled from a teacher model) |
 | **PlateauDetector early stopping** | Monitors loss in real-time and stops when improvement stalls. Canary runs (300-step test → extrapolate → full run) minimize wasted GPU hours |
@@ -115,6 +118,14 @@ training:
   save_steps: 500
   save_total_limit: null   # null = keep all checkpoints, required for best-checkpoint selection
 
+scoring:
+  mode: json              # "json" (structural key comparison) or "text" (pure text similarity)
+  primary_key: endpoint   # JSON key scored as exact match (e.g. "endpoint", "function", "tool")
+  detail_key: params      # nested dict scored by key-presence + value match (e.g. "params", "args")
+  multi_step_key: steps   # key wrapping multi-step sequences
+  primary_weight: 0.4     # weight of primary key match within structural score
+  detail_weight: 0.6      # weight of detail key match within structural score
+
 vllm:
   port: 8000
   gpu_memory_utilization: 0.85
@@ -127,6 +138,29 @@ timeouts:
 ```
 
 **Supported `chat_template` values** (Unsloth names): `qwen-2.5`, `llama-3.1`, `llama-3.2`, `gemma-it`, `chatml`, `mistral`, `phi-3`. Match this to your base model family.
+
+**Scoring presets** — remap the structural scorer for different task types:
+
+```yaml
+# API calling (default) — {"endpoint": "GET /users", "params": {"id": 1}}
+scoring:
+  primary_key: endpoint
+  detail_key: params
+
+# Function/tool calling — {"function": "get_weather", "arguments": {"city": "NYC"}}
+scoring:
+  primary_key: function
+  detail_key: arguments
+
+# SQL generation — {"query": "SELECT ...", "tables": {"users": "u"}}
+scoring:
+  primary_key: query
+  detail_key: tables
+
+# Free-form text (no JSON structure) — pure text similarity
+scoring:
+  mode: text
+```
 
 **Env var overrides** (for one-offs without editing config):
 
@@ -501,7 +535,7 @@ The rubric is loaded from `rubrics/<JUDGE_CODEBASE>.txt` if the file exists. If 
 
 ### `prepare_data.py` — API training data preparation
 
-Converts endpoint data into ShareGPT (training) and OpenAI messages (holdout) JSONL with stratified per-endpoint splits. The generated system prompt is parameterized via `--org-name` and defaults to `acme`.
+Converts API endpoint data into ShareGPT (training) and OpenAI messages (holdout) JSONL with stratified per-endpoint splits. This script is API-specific; for other task types, prepare your own ShareGPT and holdout JSONL (see [Data formats](#data-formats)). The generated system prompt is parameterized via `--org-name` and defaults to `acme`.
 
 ### `endpoint_runner.py` — per-endpoint automation
 

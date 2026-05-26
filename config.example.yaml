@@ -36,6 +36,21 @@ training:
   save_steps: 500
   save_total_limit: null   # null = keep all checkpoints (required for best-checkpoint selection in cycle.py)
 
+scoring:
+  mode: json              # "json" (structured key comparison) or "text" (pure text similarity)
+  primary_key: endpoint   # top-level JSON key scored as exact match (e.g. "endpoint", "function", "tool")
+  detail_key: params      # nested dict key scored by key-presence + value match (e.g. "params", "args", "arguments")
+  multi_step_key: steps   # key wrapping multi-step sequences (e.g. "steps", "calls", "actions")
+  primary_weight: 0.4     # weight of primary key match within structural score
+  detail_weight: 0.6      # weight of detail key match within structural score
+  composite_weights:      # how similarity and structural combine (must sum to 1.0)
+    similarity: 0.3
+    structural: 0.7
+  composite_weights_judge:  # weights when LLM judge is enabled (must sum to 1.0)
+    similarity: 0.2
+    structural: 0.5
+    judge: 0.3
+
 vllm:
   port: 8000
   gpu_memory_utilization: 0.85
