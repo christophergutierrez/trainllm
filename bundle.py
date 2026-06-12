@@ -157,6 +157,22 @@ def _extract_loss_history(adapter_dir: Path) -> list[list] | None:
     return history if history else None
 
 
+def _cfg_extras(cfg_path: Path) -> tuple[str | None, list]:
+    """Surface chat_template and route_keys from config.yaml for the manifest.
+
+    chat_template tells the consumer (e.g. FloCode) how to format prompts without
+    digging into the config snapshot. route_keys is the optional list of task
+    classes the orchestrator matches this adapter against; absent unless config.yaml
+    declares a top-level `route_keys:` list.
+    """
+    try:
+        import yaml
+        raw = yaml.safe_load(cfg_path.read_text()) or {}
+    except Exception:
+        return None, []
+    return raw.get("chat_template", "chatml"), list(raw.get("route_keys") or [])
+
+
 def bundle(
     adapter_dir: Path,
     adapter_name: str,
@@ -193,6 +209,7 @@ def bundle(
     # Read adapter config for base model info
     adapter_cfg = json.loads((adapter_dir / "adapter_config.json").read_text())
     base_model = adapter_cfg.get("base_model_name_or_path", "unknown")
+    chat_template, route_keys = _cfg_extras(cfg_path)
 
     # Training data provenance
     train_data_info = None
@@ -210,6 +227,8 @@ def bundle(
         "adapter": adapter_name,
         "version": version,
         "base_model": base_model,
+        "chat_template": chat_template,
+        "route_keys": route_keys,
         "created": datetime.now(timezone.utc).isoformat(),
         "git_sha": _git_sha(),
         "git_dirty": _git_dirty(),

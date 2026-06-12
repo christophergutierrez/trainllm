@@ -265,3 +265,32 @@ class TestRegistry:
         data = json.loads(reg_path.read_text())
         assert len(data["models"]) == 2
         assert data["models"][1]["version"] == 2
+
+
+class TestManifestExtras:
+    """chat_template + route_keys surfaced into the manifest for FloCode."""
+
+    def _manifest(self, tarball: Path) -> dict:
+        with tarfile.open(tarball, "r:gz") as tar:
+            member = next(m for m in tar.getmembers() if m.name.endswith("manifest.json"))
+            return json.loads(tar.extractfile(member).read().decode())
+
+    def test_defaults_when_config_silent(self, adapter_dir, cfg_path, tmp_path, monkeypatch):
+        monkeypatch.setattr("bundle.MODEL_DIR", tmp_path / "models")
+        monkeypatch.setattr("bundle.REGISTRY_PATH", tmp_path / "models.json")
+        # cfg_path fixture declares neither key.
+        out = bundle(adapter_dir, "test-adapter", None, min_score=0.0, cfg_path=cfg_path)
+        m = self._manifest(out)
+        assert m["chat_template"] == "chatml"  # _config default
+        assert m["route_keys"] == []
+
+    def test_surfaced_from_config(self, adapter_dir, tmp_path, monkeypatch):
+        monkeypatch.setattr("bundle.MODEL_DIR", tmp_path / "models")
+        monkeypatch.setattr("bundle.REGISTRY_PATH", tmp_path / "models.json")
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("model: test\nchat_template: qwen-2.5\n"
+                       "route_keys: [by-id, chained, paginated]\n")
+        out = bundle(adapter_dir, "test-adapter", None, min_score=0.0, cfg_path=cfg)
+        m = self._manifest(out)
+        assert m["chat_template"] == "qwen-2.5"
+        assert m["route_keys"] == ["by-id", "chained", "paginated"]
