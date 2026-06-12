@@ -580,11 +580,25 @@ When training is started from a Claude Code session, the dashboard can communica
 
 If no agent session is active (presence file stale >5 min), the panel shows "AI Disabled."
 
-To enable the relay from a Claude Code session:
+To expose your AI session to the dashboard, run the relay from the session's repo
+(`~/git_home/trainllm`) — nothing starts it automatically:
+
 ```bash
-python agent_relay.py --presence &  # keep presence alive
-# Then poll inbox and respond via outbox
+python agent_relay.py            # writes presence AND prints each new inbox message as JSON to stdout
+python agent_relay.py --presence # heartbeat only — keeps presence alive but does NOT poll the inbox
 ```
+
+The relay *surfaces* inbox messages; it does not auto-reply. To answer, your agent
+appends one JSON object per line to the outbox, echoing the message `id`:
+
+```bash
+echo '{"id": "<inbox-msg-id>", "content": "your reply"}' >> /tmp/trainllm_agent_outbox.jsonl
+```
+
+Message formats: inbox lines are `{"id", "message", "context", "timestamp"}`; the
+dashboard matches your reply's `id` to the original request and streams `content`
+to the Agent panel (live over the `AGENT` WebSocket). Override the three file paths
+with `TRAINLLM_AGENT_{PRESENCE,INBOX,OUTBOX}` if `/tmp` defaults don't suit.
 
 ### Monitoring and alerts
 
