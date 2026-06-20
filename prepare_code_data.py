@@ -19,54 +19,77 @@ SYSTEM_PROMPT = (
     "target code unit with unit, name, file, signature, and class when needed."
 )
 
-MAX_NEIGHBOR_NAMES = 6
 
-
-def _module_path(file_path: str) -> str:
-    """Convert a file path to a dot-separated Python module path."""
-    p = file_path
-    if p.endswith(".py"):
-        p = p[:-3]
-    parts = p.split("/")
-    while parts and parts[0] in ("python", "src"):
-        parts = parts[1:]
-    return ".".join(parts)
-
-
-def _enrich_thinking(records: list[dict]) -> None:
-    """Append Module/Neighbors lines to thinking fields (in place).
-
-    Builds a file → sibling-name index from all records, then appends
-    context lines to each record's thinking so the model learns stronger
-    file-location associations.
-    """
-    file_siblings: dict[str, list[str]] = {}
+def _build_retrieval_index(records: list[dict]) -> dict[str, dict[str, set[str]]]:
+    """Build name → {file → set of classes} index from all records."""
+    index: dict[str, dict[str, set[str]]] = {}
     for r in records:
-        f = r["output"].get("file", "")
-        n = r["output"].get("name", "")
-        if f and n:
-            file_siblings.setdefault(f, []).append(n)
+        out = r.get("output", {})
+        name = out.get("name", "")
+        file = out.get("file", "")
+        cls = out.get("class", "")
+        if not name or not file:
+            continue
+        entry = index.setdefault(name, {})
+        entry.setdefault(file, set()).add(cls or "_")
+    return index
 
+
+import re
+
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+_CLASS_CONTEXT_RE = re.compile(
+    r"(?:on|of|on a|of a|on an|of an)\s+`([^`]+)`", re.IGNORECASE
+)
+
+
+def _extract_identifiers(question: str) -> tuple[str, str | None]:
+    backticks = _BACKTICK_RE.findall(question)
+    if not backticks:
+        return "", None
+    class_match = _CLASS_CONTEXT_RE.search(question)
+    class_ctx = class_match.group(1) if class_match else None
+    if class_ctx and class_ctx in backticks:
+        candidates = [b for b in backticks if b != class_ctx]
+        target = candidates[0] if candidates else backticks[-1]
+    else:
+        target = backticks[-1]
+    # Handle Class.method syntax (e.g. `VaultClient.__init__`)
+    if "." in target and class_ctx is None:
+        parts = target.rsplit(".", 1)
+        class_ctx = parts[0]
+        target = parts[1]
+    return target, class_ctx
+
+
+def _search_index(index, name, class_ctx=None):
+    entries = index.get(name)
+    if not entries:
+        return []
+    if class_ctx:
+        narrowed = [f for f, classes in entries.items() if class_ctx in classes]
+        if narrowed:
+            return sorted(narrowed)
+    return sorted(entries.keys())
+
+
+def _retrieval_context(files, name):
+    if not files:
+        return ""
+    if len(files) == 1:
+        return f"[Code search: `{name}` found in {files[0]}]"
+    listing = ", ".join(files)
+    return f"[Code search: `{name}` found in {listing}]"
+
+
+def _add_retrieval_context(records: list[dict], index: dict) -> None:
+    """Prepend retrieval context to each record's question (in place)."""
     for r in records:
-        thinking = r["thinking"]
-        if "\nModule:" in thinking:
-            continue
-        f = r["output"].get("file", "")
-        own_name = r["output"].get("name", "")
-        siblings = file_siblings.get(f)
-        if not siblings:
-            continue
-        others = [n for n in siblings if n != own_name]
-        if not others:
-            continue
-        module = _module_path(f)
-        sample = others[:MAX_NEIGHBOR_NAMES]
-        suffix = f"\nModule: {module}"
-        if len(others) > MAX_NEIGHBOR_NAMES:
-            suffix += f"\nNeighbors: {', '.join(sample)}, … (+{len(others) - MAX_NEIGHBOR_NAMES} more)"
-        else:
-            suffix += f"\nNeighbors: {', '.join(sample)}"
-        r["thinking"] = thinking + suffix
+        name, class_ctx = _extract_identifiers(r["question"])
+        files = _search_index(index, name, class_ctx)
+        ctx = _retrieval_context(files, name)
+        if ctx:
+            r["question"] = f"{ctx}\n\n{r['question']}"
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -148,7 +171,8 @@ def main() -> None:
     holdout_records = load_jsonl(args.holdout_in.expanduser())
 
     all_records = train_records + holdout_records
-    _enrich_thinking(all_records)
+    index = _build_retrieval_index(all_records)
+    _add_retrieval_context(train_records, index)
 
     train_out = [to_sharegpt(r, args.system_prompt) for r in train_records]
     holdout_out = [
