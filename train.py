@@ -23,9 +23,10 @@ from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_
 class PlateauDetector(TrainerCallback):
     """Stop early when training loss plateaus; emit convergence stats."""
 
-    def __init__(self, patience_steps: int = 200, min_delta: float = 0.002):
+    def __init__(self, patience_steps: int = 200, min_delta: float = 0.002, min_steps: int = 0):
         self.patience_steps = patience_steps
         self.min_delta = min_delta
+        self.min_steps = min_steps
         self.best_loss = float("inf")
         self.best_step = 0
         self.loss_history: list[tuple[int, float, float]] = []  # (step, loss, epoch)
@@ -43,7 +44,7 @@ class PlateauDetector(TrainerCallback):
             self.best_step = step
 
         stalled_for = step - self.best_step
-        if stalled_for >= self.patience_steps and step > args.warmup_steps * 2:
+        if stalled_for >= self.patience_steps and step > args.warmup_steps * 2 and step >= self.min_steps:
             print(f"\n*** EARLY STOP: loss plateaued at {self.best_loss:.4f} "
                   f"(step {self.best_step}), no improvement for {stalled_for} steps ***\n")
             emit_warning("PLATEAU", f"Early stop: loss plateaued at {self.best_loss:.4f} "
@@ -181,7 +182,8 @@ def main() -> None:
         train_dataset = dataset
         eval_dataset  = None
 
-    plateau = PlateauDetector(patience_steps=200, min_delta=0.002)
+    steps_per_epoch = max(1, len(dataset) // cfg.training.gradient_accumulation_steps)
+    plateau = PlateauDetector(patience_steps=200, min_delta=0.002, min_steps=steps_per_epoch)
 
     callbacks         = [plateau, EventEmitterCallback()]
     actual_lr_sched   = cfg.training.lr_scheduler
