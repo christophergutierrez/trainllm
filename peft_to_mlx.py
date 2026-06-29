@@ -122,9 +122,26 @@ def convert(in_dir: Path, out_dir: Path) -> None:
     # mlx-lm applies LoRA to the LAST num_layers blocks. If PEFT trained a
     # non-tail subset, the converted config would target the wrong blocks.
     n_layers = len(layer_indices)
-    if layer_indices and (max(layer_indices) - min(layer_indices) + 1 != n_layers):
-        fail(f"non-contiguous layer indices {sorted(layer_indices)}; "
-             "mlx-lm can only target the last N blocks. Merge instead.")
+    if layer_indices:
+        if max(layer_indices) - min(layer_indices) + 1 != n_layers:
+            fail(f"non-contiguous layer indices {sorted(layer_indices)}; "
+                 "mlx-lm can only target the last N blocks. Merge instead.")
+        total_model_layers = peft_cfg.get("num_hidden_layers")
+        if total_model_layers is not None:
+            if max(layer_indices) != int(total_model_layers) - 1:
+                fail(
+                    f"adapter covers layers {sorted(layer_indices)} but the model has "
+                    f"{total_model_layers} layers (indices 0-{int(total_model_layers) - 1}). "
+                    "mlx-lm applies LoRA to the LAST num_layers blocks, so this adapter "
+                    "would target the wrong layers. Retrain on the tail layers or merge instead."
+                )
+        else:
+            print(
+                "WARNING: cannot determine total model layer count (num_hidden_layers not in "
+                "adapter_config.json) — skipping tail-alignment check. Verify that the adapter "
+                "covers the LAST num_layers blocks of the base model.",
+                file=sys.stderr,
+            )
 
     rank = peft_cfg["r"]
     # rsLoRA scales by alpha/√r; plain LoRA by alpha/r. With a uniform rank

@@ -1,0 +1,245 @@
+project: lean_speculative_decoding
+status: draft
+owner: clean_agent
+reviewer: gpt-5.5
+
+global_rules:
+  - Training happens on GB10 unless a milestone explicitly says MLX/Mac.
+  - Do not commit generated model weights, checkpoints, caches, or fused models.
+  - Each milestone must pass its listed tests before the next milestone starts.
+  - Use cheap agents for static checks, docs checks, and log summarization.
+  - Use mid-tier agents for code implementation and debugging.
+  - Use gpt-5.5 for code review, architecture review, and failed-loop diagnosis.
+  - Stop after 10 unsuccessful loops on the same blocker and escalate with logs.
+
+artifacts:
+  generated_ignore:
+    - adapters/
+    - fused-*/
+    - models/
+    - .cache/
+    - __pycache__/
+    - "*.safetensors"
+  tracked_candidates:
+    - prepare_lean_data.py
+    - lean_verify.py
+    - lean_eval_runner.py
+    - benchmark_lean_speculative.py
+    - docs/lean_speculative/
+    - tests/
+
+phases:
+  - id: phase_0
+    name: Repo And Environment Audit
+    milestones:
+      - id: "0.1"
+        name: Training CLI Audit
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run train.py --help"
+            expect: "exit_0"
+          - command: "uv run train.py --dry-run --base-model Qwen/Qwen2.5-Coder-0.5B-Instruct --output-dir /tmp/trainllm-dry-run"
+            expect: "prints_requested_model_and_output_dir"
+          - command: "uv run train.py --dry-run"
+            expect: "backward_compatible_config_defaults"
+      - id: "0.2"
+        name: MLX Capability Audit
+        owner_agent: haiku
+        max_loops: 2
+        required_tests:
+          - command: "mlx_lm.generate --help"
+            expect: "contains --draft-model and --num-draft-tokens"
+          - command: "mlx_lm.fuse --help"
+            expect: "contains --adapter-path"
+          - command: "uv run peft_to_mlx.py --help"
+            expect: "exit_0"
+          - command: "uv run pytest tests/test_peft_to_mlx.py"
+            expect: "pass"
+      - id: "0.3"
+        name: Git Hygiene Audit
+        owner_agent: haiku
+        max_loops: 2
+        required_tests:
+          - command: "git status --short"
+            expect: "only_intentional_source_changes"
+          - command: "git ls-files | grep -E '(safetensors|__pycache__|checkpoint-|fused-|/models/)'"
+            expect: "no_unintended_matches"
+
+  - id: phase_1
+    name: Lean Data Pipeline
+    milestones:
+      - id: "1.1"
+        name: Data Preparation Script
+        owner_agent: sonnet
+        max_loops: 4
+        required_tests:
+          - command: "uv run prepare_lean_data.py --limit 50 --out-dir /tmp/lean_stat_smoke"
+            expect: "train_valid_test_jsonl_written"
+          - command: "uv run pytest tests/test_prepare_lean_data.py"
+            expect: "pass"
+      - id: "1.2"
+        name: Data Quality Filters
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run prepare_lean_data.py --limit 200 --strict --out-dir /tmp/lean_stat_strict"
+            expect: "reject_report_written"
+          - command: "uv run pytest tests/test_prepare_lean_data.py -k filter"
+            expect: "pass"
+      - id: "1.3"
+        name: Prompt Rendering Check
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run pytest tests/test_lean_prompt_rendering.py"
+            expect: "pass"
+
+  - id: phase_2
+    name: Training Pipeline
+    milestones:
+      - id: "2.1"
+        name: 0.5B Smoke Adapter
+        owner_agent: sonnet
+        max_loops: 5
+        required_tests:
+          - command: "uv run train.py --base-model Qwen/Qwen2.5-Coder-0.5B-Instruct --train-data data/lean_stat/train.jsonl --output-dir adapters/0.5b-lean-smoke --max-steps 20"
+            expect: "adapter_written"
+          - command: "uv run pytest tests/test_adapter_load.py -k 0_5b"
+            expect: "pass"
+      - id: "2.2"
+        name: 7B Smoke Adapter
+        owner_agent: sonnet
+        max_loops: 5
+        required_tests:
+          - command: "uv run train.py --base-model Qwen/Qwen2.5-Coder-7B-Instruct --train-data data/lean_stat/train.jsonl --output-dir adapters/7b-lean-smoke --max-steps 20"
+            expect: "adapter_written"
+          - command: "uv run pytest tests/test_adapter_load.py -k 7b"
+            expect: "pass"
+      - id: "2.3"
+        name: Full 0.5B Adapter
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run train.py --base-model Qwen/Qwen2.5-Coder-0.5B-Instruct --train-data data/lean_stat/train.jsonl --output-dir adapters/0.5b-lean"
+            expect: "final_adapter_and_convergence_written"
+      - id: "2.4"
+        name: Full 7B Adapter
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run train.py --base-model Qwen/Qwen2.5-Coder-7B-Instruct --train-data data/lean_stat/train.jsonl --output-dir adapters/7b-lean"
+            expect: "final_adapter_and_convergence_written"
+
+  - id: phase_3
+    name: MLX Conversion And Fusion
+    milestones:
+      - id: "3.1"
+        name: Convert 0.5B Adapter
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run peft_to_mlx.py adapters/0.5b-lean/final adapters/0.5b-lean-mlx"
+            expect: "mlx_adapter_written"
+      - id: "3.2"
+        name: Convert 7B Adapter
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "uv run peft_to_mlx.py adapters/7b-lean/final adapters/7b-lean-mlx"
+            expect: "mlx_adapter_written"
+      - id: "3.3"
+        name: Fuse 0.5B Model
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "mlx_lm.fuse --model Qwen/Qwen2.5-Coder-0.5B-Instruct --adapter-path adapters/0.5b-lean-mlx --save-path fused-0.5b-lean"
+            expect: "fused_model_written"
+          - command: "mlx_lm.generate --model fused-0.5b-lean --prompt 'Given the Lean 4 state:\\nexample\\nProvide the next tactical step.' --max-tokens 20"
+            expect: "nonempty_output"
+      - id: "3.4"
+        name: Fuse 7B Model
+        owner_agent: sonnet
+        max_loops: 3
+        required_tests:
+          - command: "mlx_lm.fuse --model Qwen/Qwen2.5-Coder-7B-Instruct --adapter-path adapters/7b-lean-mlx --save-path fused-7b-lean"
+            expect: "fused_model_written"
+          - command: "mlx_lm.generate --model fused-7b-lean --prompt 'Given the Lean 4 state:\\nexample\\nProvide the next tactical step.' --max-tokens 20"
+            expect: "nonempty_output"
+
+  - id: phase_4
+    name: Lean Verification Harness
+    milestones:
+      - id: "4.1"
+        name: Lean Project Harness
+        owner_agent: sonnet
+        max_loops: 5
+        required_tests:
+          - command: "uv run pytest tests/test_lean_verify.py -k known_valid"
+            expect: "pass"
+          - command: "uv run pytest tests/test_lean_verify.py -k known_invalid"
+            expect: "pass"
+      - id: "4.2"
+        name: Tactic Safety Checks
+        owner_agent: haiku
+        max_loops: 3
+        required_tests:
+          - command: "uv run pytest tests/test_lean_verify.py -k safety"
+            expect: "pass"
+      - id: "4.3"
+        name: Evaluation Runner
+        owner_agent: sonnet
+        max_loops: 5
+        required_tests:
+          - command: "uv run pytest tests/test_lean_eval_runner.py"
+            expect: "pass"
+          - command: "uv run lean_eval_runner.py --limit 5 --model fused-7b-lean --out-dir /tmp/lean_eval_smoke"
+            expect: "summary_and_predictions_written"
+
+  - id: phase_5
+    name: Benchmark Matrix
+    milestones:
+      - id: "5.1"
+        name: Baseline Runs
+        owner_agent: sonnet
+        max_loops: 4
+        required_tests:
+          - command: "uv run benchmark_lean_speculative.py --limit 20 --matrix base7b,target7b,draft0_5b --out-dir reports/smoke"
+            expect: "summaries_written"
+      - id: "5.2"
+        name: Speculative Run
+        owner_agent: sonnet
+        max_loops: 4
+        required_tests:
+          - command: "uv run benchmark_lean_speculative.py --limit 20 --matrix speculative --num-draft-tokens 5 --out-dir reports/spec_smoke"
+            expect: "speculative_summary_written"
+      - id: "5.3"
+        name: Report
+        owner_agent: haiku
+        max_loops: 3
+        required_tests:
+          - command: "uv run benchmark_lean_speculative.py --report reports/spec_smoke --out reports/spec_smoke/REPORT.md"
+            expect: "report_written_without_absolute_paths"
+
+  - id: phase_6
+    name: Handoff Package
+    milestones:
+      - id: "6.1"
+        name: Bundle Layout
+        owner_agent: sonnet
+        max_loops: 4
+        required_tests:
+          - command: "uv run package_lean_speculative.py --out dist/lean-speculative-bundle"
+            expect: "bundle_written"
+          - command: "find dist/lean-speculative-bundle -type d -name __pycache__ -o -name checkpoint-* -o -name .cache"
+            expect: "no_matches"
+          - command: "rg -n '/home/chris|git_home' dist/lean-speculative-bundle"
+            expect: "no_matches"
+      - id: "6.2"
+        name: Cold-Agent Validation
+        owner_agent: haiku
+        max_loops: 10
+        required_tests:
+          - command: "manual_subagent_review"
+            expect: "no_bundle_internal_blockers"
+

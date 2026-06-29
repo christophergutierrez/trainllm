@@ -1,3 +1,4 @@
+import argparse
 import gc
 import json
 import os
@@ -6,18 +7,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _config
-cfg = _config.load()
 
-# HF_HOME must be set before importing torch/unsloth — they read it at import time.
-os.environ["HF_HOME"] = str(cfg.hf_home)
-
-import torch  # noqa: E402
-from unsloth import FastLanguageModel  # noqa: E402
-from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only  # noqa: E402
-from datasets import load_dataset  # noqa: E402
-from trl import SFTTrainer  # noqa: E402
-from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq  # noqa: E402
-from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_warning  # noqa: E402
+try:
+    from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq
+    from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_warning
+except ImportError:
+    TrainerCallback = object  # type: ignore[assignment,misc]
 
 
 class PlateauDetector(TrainerCallback):
@@ -105,10 +100,54 @@ def _find_latest_checkpoint(output_dir: Path) -> str | None:
 
 
 def main() -> None:
-    MODEL_NAME = cfg.model
-    DATA_PATH  = Path(os.environ.get("TRAIN_DATA",  str(cfg.train_data)))
-    OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR",  str(cfg.lora_dir)))
-    MAX_STEPS  = int(os.environ.get("MAX_STEPS",    str(cfg.training.max_steps)))
+    # --- Argument parsing (runs before config or model loading) ---
+    parser = argparse.ArgumentParser(
+        description="Fine-tune an LLM with LoRA using Unsloth."
+    )
+    parser.add_argument("--base-model", type=str, default=None, metavar="STR",
+                        help="Base model name or path (overrides cfg.model)")
+    parser.add_argument("--train-data", type=str, default=None, metavar="PATH",
+                        help="Training data file (overrides TRAIN_DATA env / cfg.train_data)")
+    parser.add_argument("--output-dir", type=str, default=None, metavar="PATH",
+                        help="Output directory for LoRA adapter (overrides OUTPUT_DIR env / cfg.lora_dir)")
+    parser.add_argument("--max-steps", type=int, default=None, metavar="INT",
+                        help="Maximum training steps (overrides MAX_STEPS env / cfg.training.max_steps)")
+    parser.add_argument("--adapter-name", type=str, default=None, metavar="STR",
+                        help="Adapter name (overrides cfg.adapter_name)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print resolved config and exit without loading any model")
+    args = parser.parse_args()
+
+    # --- Config loading (after argparse so --help exits cleanly) ---
+    cfg = _config.load()
+
+    # HF_HOME must be set before importing torch/unsloth — they read it at import time.
+    os.environ["HF_HOME"] = str(cfg.hf_home)
+
+    # --- Resolve effective settings: CLI flags > env vars > config ---
+    MODEL_NAME = args.base_model    if args.base_model   is not None else cfg.model
+    DATA_PATH  = Path(args.train_data  if args.train_data  is not None else os.environ.get("TRAIN_DATA",  str(cfg.train_data)))
+    OUTPUT_DIR = Path(args.output_dir  if args.output_dir  is not None else os.environ.get("OUTPUT_DIR",  str(cfg.lora_dir)))
+    MAX_STEPS  = args.max_steps        if args.max_steps   is not None else int(os.environ.get("MAX_STEPS", str(cfg.training.max_steps)))
+    if args.adapter_name is not None:
+        cfg.adapter_name = args.adapter_name
+
+    # --- Dry-run: print resolved config and exit without loading any model ---
+    if args.dry_run:
+        print(f"Model:         {MODEL_NAME}")
+        print(f"Adapter name:  {cfg.adapter_name}")
+        print(f"Training data: {DATA_PATH}")
+        print(f"Output dir:    {OUTPUT_DIR}")
+        print(f"Max steps:     {MAX_STEPS}")
+        print(f"Optimizer:     {cfg.training.optimizer}")
+        sys.exit(0)
+
+    # --- Heavy imports (placed here so HF_HOME is already set) ---
+    import torch  # noqa: E402
+    from unsloth import FastLanguageModel  # noqa: E402
+    from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only  # noqa: E402
+    from datasets import load_dataset  # noqa: E402
+    from trl import SFTTrainer  # noqa: E402
 
     print(f"Model:         {MODEL_NAME}")
     print(f"Adapter name:  {cfg.adapter_name}")
@@ -182,7 +221,7 @@ def main() -> None:
         train_dataset = dataset
         eval_dataset  = None
 
-    steps_per_epoch = max(1, len(dataset) // cfg.training.gradient_accumulation_steps)
+    steps_per_epoch = max(1, len(dataset) // (cfg.training.batch_size * cfg.training.gradient_accumulation_steps))
     plateau = PlateauDetector(patience_steps=200, min_delta=0.002, min_steps=steps_per_epoch)
 
     callbacks         = [plateau, EventEmitterCallback()]

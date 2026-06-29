@@ -22,7 +22,13 @@ models/
 merged/
 archive/
 handoff/
+adapters/
+fused-*/
 !models.json
+
+# Caches
+.cache/
+.vite/
 
 # Build artifacts
 __pycache__/

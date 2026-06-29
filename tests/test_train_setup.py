@@ -4,6 +4,7 @@ Tests the configuration-to-argument mapping and feature flag behavior.
 Does not import unsloth/torch (no GPU required).
 """
 
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+_REPO_ROOT = str(Path(__file__).parent.parent)
 
 
 class TestLoraInitMapping:
@@ -140,3 +143,48 @@ class TestValidationSplit:
             ds = self._MockDataset(n)
             train, eval_ = self._apply_split(ds, eval_during_training=True)
             assert len(train) + len(eval_) == n
+
+
+class TestCLI:
+    """Tests for CLI argument parsing and --dry-run behavior.
+
+    Uses subprocess so we never import torch/unsloth in the test process.
+    """
+
+    def test_help_exits_zero(self):
+        result = subprocess.run(
+            ["python3", "train.py", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        assert result.returncode == 0
+
+    def test_dry_run_exits_zero(self):
+        result = subprocess.run(
+            [
+                "python3", "train.py", "--dry-run",
+                "--base-model", "test/model",
+                "--output-dir", "/tmp/test",
+                "--train-data", "/tmp/fake.jsonl",
+                "--max-steps", "5",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        assert result.returncode == 0
+        assert "test/model" in result.stdout
+        assert "/tmp/test" in result.stdout
+
+    def test_all_required_flags_in_help(self):
+        result = subprocess.run(
+            ["python3", "train.py", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        assert "--base-model" in result.stdout
+        assert "--train-data" in result.stdout
+        assert "--output-dir" in result.stdout
+        assert "--max-steps" in result.stdout

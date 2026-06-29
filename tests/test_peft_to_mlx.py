@@ -85,6 +85,16 @@ class TestBasicConversion:
         assert cfg["lora_parameters"]["rank"] == RANK
         assert cfg["lora_parameters"]["keys"] == ["self_attn.q_proj", "self_attn.v_proj"]
 
+    def test_output_dir_created(self, tmp_path):
+        # convert() must create the output directory even when it doesn't exist.
+        in_dir = tmp_path / "peft"
+        out_dir = tmp_path / "mlx" / "nested"
+        _make_adapter(in_dir, _layer_weights([0]))
+        assert not out_dir.exists()
+        convert(in_dir, out_dir)
+        assert out_dir.exists()
+        assert (out_dir / "adapters.safetensors").exists()
+
     def _run(self, tmp_path, weights, **extra):
         return _convert(tmp_path, weights, **extra)
 
@@ -125,6 +135,27 @@ class TestRefusals:
         # mlx-lm can only target the last N contiguous blocks.
         with pytest.raises(SystemExit):
             _convert(tmp_path, _layer_weights([0, 2]))
+
+    def test_non_tail_range_rejected(self, tmp_path):
+        # Layers 0-1 of a 4-layer model: max index is 1, not 3. mlx-lm would
+        # apply LoRA to layers 2-3 instead — wrong, so conversion must refuse.
+        with pytest.raises(SystemExit):
+            _convert(tmp_path, _layer_weights([0, 1]), num_hidden_layers=4)
+
+    def test_tail_range_accepted(self, tmp_path):
+        # Layers 2-3 of a 4-layer model: max index is 3 == 4-1. This is the
+        # tail, so mlx-lm will correctly target these blocks.
+        _, cfg, _ = _convert(tmp_path, _layer_weights([2, 3]), num_hidden_layers=4)
+        assert cfg["num_layers"] == 2
+
+    def test_missing_safetensors_raises(self, tmp_path):
+        # adapter_config.json present but adapter_model.safetensors absent.
+        in_dir = tmp_path / "peft"
+        in_dir.mkdir()
+        cfg = {"r": RANK, "lora_alpha": 16, "peft_type": "LORA"}
+        (in_dir / "adapter_config.json").write_text(json.dumps(cfg))
+        with pytest.raises(SystemExit):
+            convert(in_dir, tmp_path / "mlx")
 
     def test_rslora_is_not_refused(self, tmp_path):
         # The whole point of the relaxation: a default-trained adapter converts.
