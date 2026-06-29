@@ -33,9 +33,8 @@ Correctness must be verified with Lean, not manual inspection.
 ## Important Existing Context
 
 - `train.py` currently uses config/env-driven Unsloth training.
-- It already has a local uncommitted change that prevents plateau early stop
-  before roughly one epoch. Preserve that behavior unless you have a better
-  implementation.
+- It prevents plateau early stop before roughly one epoch. Preserve that
+  behavior unless you have a better implementation.
 - `peft_to_mlx.py` exists because MLX does not consume raw PEFT adapters.
 - `mlx_lm.fuse` should receive MLX-format adapters, not raw PEFT adapters.
 - Keep massive artifacts out of git.
@@ -133,4 +132,3 @@ The project is done when:
 - Lean compiler verification is automated
 - a report gives correctness and speed results
 - a clean bundle can be followed by a cold agent without internal blockers
-

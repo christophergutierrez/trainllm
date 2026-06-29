@@ -11,6 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from prepare_lean_data import (
+    build_reject_report,
+    extract_pairs,
     make_record,
     is_valid,
     split_records,
@@ -21,38 +23,57 @@ from prepare_lean_data import (
 
 class TestRecordSchema:
     def test_record_schema_valid(self):
-        """Output record has the correct messages structure with role/content fields."""
+        """Output record has the trainLLM ShareGPT conversations structure."""
         record = make_record("⊢ n + 0 = n", "simp")
-        assert "messages" in record
-        msgs = record["messages"]
-        assert len(msgs) == 2
+        assert "conversations" in record
+        convs = record["conversations"]
+        assert len(convs) == 2
         # User turn
-        assert msgs[0]["role"] == "user"
-        assert "content" in msgs[0]
-        assert "⊢ n + 0 = n" in msgs[0]["content"]
+        assert convs[0]["from"] == "human"
+        assert "value" in convs[0]
+        assert "⊢ n + 0 = n" in convs[0]["value"]
         # Assistant turn
-        assert msgs[1]["role"] == "assistant"
-        assert "content" in msgs[1]
-        assert msgs[1]["content"] == "simp"
+        assert convs[1]["from"] == "gpt"
+        assert "value" in convs[1]
+        assert convs[1]["value"] == "simp"
 
     def test_user_prompt_contains_preamble(self):
         record = make_record("⊢ True", "trivial")
-        content = record["messages"][0]["content"]
+        content = record["conversations"][0]["value"]
         assert content.startswith("Given the Lean 4 state:\n")
         assert "Provide the next tactical step." in content
 
     def test_assistant_content_is_exact_tactic(self):
         record = make_record("⊢ 1 + 1 = 2", "norm_num")
-        assert record["messages"][1]["content"] == "norm_num"
+        assert record["conversations"][1]["value"] == "norm_num"
 
     def test_state_embedded_in_user_content(self):
         state = "case h\nx : Nat\n⊢ x = x"
         record = make_record(state, "rfl")
-        assert state in record["messages"][0]["content"]
+        assert state in record["conversations"][0]["value"]
 
-    def test_only_two_messages(self):
+    def test_only_two_conversation_turns(self):
         record = make_record("⊢ P", "exact hp")
-        assert len(record["messages"]) == 2
+        assert len(record["conversations"]) == 2
+
+
+class TestDatasetExtraction:
+    def test_extracts_traced_tactics_from_real_dataset_shape(self):
+        raw = {
+            "file_path": "SLT/Chaining.lean",
+            "traced_tactics": [
+                {"state_before": "⊢ True", "tactic": "trivial"},
+                {"state_before": "n : Nat\n⊢ n = n", "tactic": "rfl"},
+            ],
+        }
+        assert extract_pairs(raw, "traced_tactics", "tactic") == [
+            ("⊢ True", "trivial"),
+            ("n : Nat\n⊢ n = n", "rfl"),
+        ]
+
+    def test_extracts_top_level_pair(self):
+        raw = {"state": "⊢ True", "tactic": "trivial"}
+        assert extract_pairs(raw, "state", "tactic") == [("⊢ True", "trivial")]
 
 
 # ── Empty-value filtering ────────────────────────────────────────────────────
@@ -221,18 +242,19 @@ class TestRejectReportHasCounts:
             "empty_tactic": 1,
             "forbidden_token:sorry": 2,
         }
-        report = {
-            "total_processed": 106,
-            "total_valid": 100,
-            "total_rejected": sum(reject_counts.values()),
-            "strict_mode": True,
-            "seed": 42,
-            "reject_counts": reject_counts,
-            "reject_examples": {
-                "empty_state": [{"state": "", "tactic": "simp"}],
-            },
-        }
-        assert "total_processed" in report
+        report = build_reject_report(
+            rows_processed=20,
+            pairs_processed=106,
+            valid_count=100,
+            strict=True,
+            seed=42,
+            limit=None,
+            state_field="traced_tactics",
+            tactic_field="tactic",
+            reject_counts=reject_counts,
+            reject_examples={"empty_state": [{"state": "", "tactic": "simp"}]},
+        )
+        assert "total_pairs_processed" in report
         assert "total_valid" in report
         assert "total_rejected" in report
         assert "reject_counts" in report
@@ -242,35 +264,40 @@ class TestRejectReportHasCounts:
     def test_reject_report_roundtrips_via_json(self, tmp_path: Path):
         """Reject report survives a JSON write/read cycle."""
         reject_counts = {"empty_state": 2, "forbidden_token:admit": 1}
-        report = {
-            "total_processed": 13,
-            "total_valid": 10,
-            "total_rejected": 3,
-            "strict_mode": True,
-            "seed": 42,
-            "reject_counts": reject_counts,
-            "reject_examples": {
-                "empty_state": [{"state": "", "tactic": "rfl"}]
-            },
-        }
+        report = build_reject_report(
+            rows_processed=9,
+            pairs_processed=13,
+            valid_count=10,
+            strict=True,
+            seed=42,
+            limit=10,
+            state_field="state",
+            tactic_field="tactic",
+            reject_counts=reject_counts,
+            reject_examples={"empty_state": [{"state": "", "tactic": "rfl"}]},
+        )
         path = tmp_path / "reject_report.json"
         path.write_text(json.dumps(report, indent=2))
         loaded = json.loads(path.read_text())
-        assert loaded["total_processed"] == 13
+        assert loaded["total_pairs_processed"] == 13
         assert loaded["reject_counts"]["empty_state"] == 2
         assert loaded["reject_counts"]["forbidden_token:admit"] == 1
+        assert loaded["field_mapping"] == {"state": "state", "tactic": "tactic"}
 
     def test_reject_counts_sum_to_total_rejected(self):
         """total_rejected equals the sum of all individual reject_counts."""
         counts = {"empty_state": 4, "empty_tactic": 2, "forbidden_token:sorry": 7}
-        report = {
-            "total_processed": 100,
-            "total_valid": 87,
-            "total_rejected": sum(counts.values()),
-            "strict_mode": True,
-            "seed": 42,
-            "reject_counts": counts,
-            "reject_examples": {},
-        }
+        report = build_reject_report(
+            rows_processed=60,
+            pairs_processed=100,
+            valid_count=87,
+            strict=True,
+            seed=42,
+            limit=None,
+            state_field="traced_tactics",
+            tactic_field="tactic",
+            reject_counts=counts,
+            reject_examples={},
+        )
         assert report["total_rejected"] == sum(report["reject_counts"].values())
-        assert report["total_valid"] + report["total_rejected"] == report["total_processed"]
+        assert report["total_valid"] + report["total_rejected"] == report["total_pairs_processed"]

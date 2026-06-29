@@ -74,7 +74,7 @@ phases:
         owner_agent: sonnet
         max_loops: 4
         required_tests:
-          - command: "uv run prepare_lean_data.py --limit 50 --out-dir /tmp/lean_stat_smoke"
+          - command: "uv run prepare_lean_data.py --limit 50 --output-dir /tmp/lean_stat_smoke"
             expect: "train_valid_test_jsonl_written"
           - command: "uv run pytest tests/test_prepare_lean_data.py"
             expect: "pass"
@@ -83,7 +83,7 @@ phases:
         owner_agent: sonnet
         max_loops: 3
         required_tests:
-          - command: "uv run prepare_lean_data.py --limit 200 --strict --out-dir /tmp/lean_stat_strict"
+          - command: "uv run prepare_lean_data.py --limit 200 --strict --output-dir /tmp/lean_stat_strict"
             expect: "reject_report_written"
           - command: "uv run pytest tests/test_prepare_lean_data.py -k filter"
             expect: "pass"
@@ -139,14 +139,14 @@ phases:
         owner_agent: sonnet
         max_loops: 3
         required_tests:
-          - command: "uv run peft_to_mlx.py adapters/0.5b-lean/final adapters/0.5b-lean-mlx"
+          - command: "uv run peft_to_mlx.py --in adapters/0.5b-lean/final --out adapters/0.5b-lean-mlx"
             expect: "mlx_adapter_written"
       - id: "3.2"
         name: Convert 7B Adapter
         owner_agent: sonnet
         max_loops: 3
         required_tests:
-          - command: "uv run peft_to_mlx.py adapters/7b-lean/final adapters/7b-lean-mlx"
+          - command: "uv run peft_to_mlx.py --in adapters/7b-lean/final --out adapters/7b-lean-mlx"
             expect: "mlx_adapter_written"
       - id: "3.3"
         name: Fuse 0.5B Model
@@ -242,4 +242,3 @@ phases:
         required_tests:
           - command: "manual_subagent_review"
             expect: "no_bundle_internal_blockers"
-

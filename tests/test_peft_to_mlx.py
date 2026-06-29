@@ -40,6 +40,14 @@ def _layer_weights(layers, modules=("q_proj", "v_proj")):
 def _make_adapter(adapter_dir: Path, weights: dict, **config_extra) -> None:
     adapter_dir.mkdir(parents=True, exist_ok=True)
     cfg = {"r": RANK, "lora_alpha": 16, "peft_type": "LORA"}
+    layer_indices = []
+    for key in weights:
+        marker = "base_model.model.model.layers."
+        if marker in key:
+            rest = key.split(marker, 1)[1]
+            layer_indices.append(int(rest.split(".", 1)[0]))
+    if layer_indices and "num_hidden_layers" not in config_extra:
+        cfg["num_hidden_layers"] = max(layer_indices) + 1
     cfg.update(config_extra)
     (adapter_dir / "adapter_config.json").write_text(json.dumps(cfg))
     save_file(weights, str(adapter_dir / "adapter_model.safetensors"))
@@ -141,6 +149,30 @@ class TestRefusals:
         # apply LoRA to layers 2-3 instead — wrong, so conversion must refuse.
         with pytest.raises(SystemExit):
             _convert(tmp_path, _layer_weights([0, 1]), num_hidden_layers=4)
+
+    def test_unknown_layer_count_rejected_by_default(self, tmp_path):
+        in_dir = tmp_path / "peft"
+        out_dir = tmp_path / "mlx"
+        weights = _layer_weights([0, 1])
+        _make_adapter(in_dir, weights, num_hidden_layers=None)
+        cfg = json.loads((in_dir / "adapter_config.json").read_text())
+        cfg.pop("num_hidden_layers", None)
+        (in_dir / "adapter_config.json").write_text(json.dumps(cfg))
+
+        with pytest.raises(SystemExit):
+            convert(in_dir, out_dir)
+
+    def test_unknown_layer_count_can_be_overridden(self, tmp_path):
+        in_dir = tmp_path / "peft"
+        out_dir = tmp_path / "mlx"
+        weights = _layer_weights([0, 1])
+        _make_adapter(in_dir, weights, num_hidden_layers=None)
+        cfg = json.loads((in_dir / "adapter_config.json").read_text())
+        cfg.pop("num_hidden_layers", None)
+        (in_dir / "adapter_config.json").write_text(json.dumps(cfg))
+
+        convert(in_dir, out_dir, allow_unknown_layer_count=True)
+        assert (out_dir / "adapters.safetensors").exists()
 
     def test_tail_range_accepted(self, tmp_path):
         # Layers 2-3 of a 4-layer model: max index is 3 == 4-1. This is the

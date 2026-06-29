@@ -114,7 +114,7 @@ Required implementation:
 - Each record must be a single-line JSON object:
 
 ```json
-{"messages":[{"role":"user","content":"Given the Lean 4 state:\n...\nProvide the next tactical step."},{"role":"assistant","content":"..."}]}
+{"conversations":[{"from":"human","value":"Given the Lean 4 state:\n...\nProvide the next tactical step."},{"from":"gpt","value":"..."}]}
 ```
 
 Tests before moving on:
@@ -146,7 +146,7 @@ Tests before moving on:
 
 Required implementation:
 
-- Add a script or test that renders sample messages through the Qwen chat
+- Add a script or test that renders sample conversations through the Qwen chat
   template used by training.
 
 Tests before moving on:
@@ -441,4 +441,3 @@ Tests before moving on:
 - Cold agent can explain how to run target-only and speculative inference.
 - Cold agent can explain how to run Lean verification.
 - No bundle-internal blockers remain.
-

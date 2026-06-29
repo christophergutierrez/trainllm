@@ -9,8 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _config
 
 try:
-    from transformers import TrainingArguments, TrainerCallback, DataCollatorForSeq2Seq
-    from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_warning
+    from transformers import TrainerCallback
 except ImportError:
     TrainerCallback = object  # type: ignore[assignment,misc]
 
@@ -148,6 +147,8 @@ def main() -> None:
     from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only  # noqa: E402
     from datasets import load_dataset  # noqa: E402
     from trl import SFTTrainer  # noqa: E402
+    from transformers import TrainingArguments, DataCollatorForSeq2Seq  # noqa: E402
+    from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_warning  # noqa: E402
 
     print(f"Model:         {MODEL_NAME}")
     print(f"Adapter name:  {cfg.adapter_name}")
