@@ -51,8 +51,8 @@ RUN_LABELS = {
     "speculative":        "Speculative 7B + 0.5B draft",
     "frontier-no-context": "Frontier plan/UI (zero-shot)",
     "frontier-with-context": "Frontier plan/UI (few-shot, training context)",
-    "frontier-api-no-context": "Opus 4.8 (zero-shot)",
-    "frontier-api-with-context": "Opus 4.8 (few-shot, training context)",
+    "frontier-api-no-context": "Frontier API (zero-shot, explicit opt-in)",
+    "frontier-api-with-context": "Frontier API (few-shot, explicit opt-in)",
 }
 
 
@@ -80,7 +80,13 @@ def _load_runs(eval_dir: Path) -> dict[str, dict]:
         summary = json.loads(summary_path.read_text())
         cfg_path = summary_path.parent / "run_config.json"
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        pred_path = summary_path.parent / "predictions.jsonl"
+        prediction_count = None
+        if pred_path.exists():
+            with pred_path.open(encoding="utf-8") as f:
+                prediction_count = sum(1 for line in f if line.strip())
         runs[run_name] = {"summary": summary, "cfg": cfg}
+        runs[run_name]["prediction_count"] = prediction_count
     return runs
 
 
@@ -175,7 +181,7 @@ def generate_report(
     w("| Max steps | 2000 | 2000 |")
     w("| Learning rate | 2e-4 | 1e-4 |")
     w("| Batch size (effective) | 16 | 16 |")
-    w("| FP8 training | yes | yes |")
+    w("| FP8 loading | disabled | disabled |")
     w("| Loss mask | responses only | responses only |")
     w("")
 
@@ -211,6 +217,9 @@ def generate_report(
                 notes = f"{nd} draft tokens"
             elif s.get("mode") == "with-context":
                 notes = f"{s.get('n_shots', '?')}-shot"
+            pred_count = runs[key].get("prediction_count")
+            if pred_count is not None and isinstance(n_eval, int) and pred_count != n_eval:
+                notes = (notes + "; " if notes else "") + f"INCONSISTENT: {pred_count} predictions"
             w(f"| {label} | {n} | {n_eval} | {pass_rate} | {safety_fail} | {latency} | {tps} | {in_toks} | {out_toks} | {notes} |")
     w("")
 

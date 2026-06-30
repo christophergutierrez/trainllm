@@ -43,8 +43,19 @@ def safety_check(tactic: str) -> bool:
     return not FORBIDDEN.search(tactic)
 
 
+def _find_executable(name: str) -> str | None:
+    """Find a tool on PATH, falling back to the standard elan install dir."""
+    found = shutil.which(name)
+    if found:
+        return found
+    elan_bin = Path.home() / ".elan" / "bin" / name
+    if elan_bin.exists():
+        return str(elan_bin)
+    return None
+
+
 def _find_lean() -> str | None:
-    return shutil.which("lean") or shutil.which("lake")
+    return _find_executable("lean")
 
 
 def _lean_cmd(path: Path, project_dir: Path | None) -> list[str]:
@@ -55,11 +66,14 @@ def _lean_cmd(path: Path, project_dir: Path | None) -> list[str]:
     the SLT and Mathlib oleans are on LEAN_PATH.  Without it, falls back to a
     bare `lean <file>` call (only stdlib available).
     """
+    if project_dir is not None and (project_dir / "lakefile.lean").exists():
+        lake = _find_executable("lake")
+        if lake is None:
+            return []
+        return [lake, "env", "lean", str(path)]
     lean = _find_lean()
     if lean is None:
         return []
-    if project_dir is not None and (project_dir / "lakefile.lean").exists():
-        return ["lake", "env", "lean", str(path)]
     return [lean, str(path)]
 
 
@@ -85,12 +99,16 @@ def _parse_state(state_before: str) -> tuple[list[str], str] | tuple[None, None]
             continue
         if line.startswith("⊢"):
             goal = line[1:].strip()
-        elif re.match(r"^\w[\w✝ ]*:", line):
-            hyps.append(line)
+        elif re.match(r"^\w[\w✝¹²³⁴⁵⁶⁷⁸⁹⁰ ]*:", line):
+            name, typ = line.split(":", 1)
+            if name.strip().startswith("inst"):
+                hyps.append(f"[{typ.strip()}]")
+            else:
+                hyps.append(line)
     if goal is None:
         return None, None
-    # Reject states that reference metavariables or instance dummies we can't reconstruct.
-    if re.search(r"\?[mu]\w*|inst✝", goal + " ".join(hyps)):
+    # Reject states that reference metavariables we can't reconstruct.
+    if re.search(r"\?[mu]\w*", goal + " ".join(hyps)):
         return None, None
     return hyps, goal
 
@@ -170,8 +188,12 @@ def _make_lean_snippet(state_before: str, tactic: str,
     hyps, goal = _parse_state(state_before)
     if goal is None:
         return None
-    hyp_str = " ".join(f"({h})" for h in hyps)
-    return f"{header}example {hyp_str}: {goal} := by\n  {tactic}\n"
+    universe_names = sorted(set(
+        re.findall(r"\b(?:Type|Sort)\s+([A-Za-z_][A-Za-z0-9_']*)", state_before)
+    ))
+    universe_header = f"universe {' '.join(universe_names)}\n\n" if universe_names else ""
+    hyp_str = " ".join(h if h.startswith("[") else f"({h})" for h in hyps)
+    return f"{header}{universe_header}example {hyp_str}: {goal} := by\n  {tactic}\n"
 
 
 def verify_tactic(

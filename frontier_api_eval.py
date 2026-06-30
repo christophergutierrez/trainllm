@@ -171,8 +171,6 @@ def run_eval(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     records = _load_records(test_path, limit=limit)
-    if max_state_chars is not None:
-        records = [r for r in records if len(r.get("state_before", "")) <= max_state_chars]
 
     shots: list[dict] = []
     if mode == "with-context":
@@ -207,6 +205,8 @@ def run_eval(
 
     pred_path = out_dir / "predictions.jsonl"
     err_path = out_dir / "compiler_errors.jsonl"
+    summary_path = out_dir / "summary.json"
+    summary_path.unlink(missing_ok=True)
 
     n_safety_fail = 0
     n_lean_pass = 0
@@ -215,11 +215,17 @@ def run_eval(
     total_input_tokens = 0
     total_output_tokens = 0
     total_elapsed = 0.0
+    n_skipped_size = 0
+    n_evaluated = 0
 
     with open(pred_path, "w") as pred_f, open(err_path, "w") as err_f:
         for i, rec in enumerate(records):
             state_before = rec.get("state_before", "")
             expected_tactic = rec.get("expected_tactic", "")
+
+            if max_state_chars is not None and len(state_before) > max_state_chars:
+                n_skipped_size += 1
+                continue
 
             if mode == "no-context":
                 messages = _build_no_context(state_before)
@@ -234,6 +240,7 @@ def run_eval(
                 messages=messages,
             )
             elapsed = time.monotonic() - t0
+            n_evaluated += 1
 
             gen_text = _strip_markdown(response.content[0].text)
             in_toks = response.usage.input_tokens
@@ -283,10 +290,11 @@ def run_eval(
             }
             pred_f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-            if lean_pass is False and lean_stderr:
+            if lean_pass is False and (lean_stderr or lean_stdout):
                 err_f.write(json.dumps({
                     "index": i,
                     "generated_tactic": gen_text,
+                    "lean_stdout": lean_stdout,
                     "lean_stderr": lean_stderr,
                 }, ensure_ascii=False) + "\n")
 
@@ -304,21 +312,23 @@ def run_eval(
         "n_shots": len(shots),
         "test_path": str(test_path),
         "n_total": n_total,
+        "n_skipped_size": n_skipped_size,
+        "n_evaluated": n_evaluated,
         "n_safety_fail": n_safety_fail,
         "n_lean_pass": n_lean_pass,
         "n_lean_fail": n_lean_fail,
         "n_lean_skip": n_lean_skip,
         "compile_pass_rate": n_lean_pass / lean_eligible if lean_eligible > 0 else None,
-        "mean_elapsed_s": round(total_elapsed / n_total, 3) if n_total else 0,
+        "mean_elapsed_s": round(total_elapsed / n_evaluated, 3) if n_evaluated else 0,
         "mean_tps": round(total_output_tokens / total_elapsed, 1) if total_elapsed > 0 else 0,
         "total_tokens": total_output_tokens,
         "total_elapsed_s": round(total_elapsed, 1),
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
-        "mean_input_tokens": round(total_input_tokens / n_total, 1) if n_total else 0,
-        "mean_output_tokens": round(total_output_tokens / n_total, 1) if n_total else 0,
+        "mean_input_tokens": round(total_input_tokens / n_evaluated, 1) if n_evaluated else 0,
+        "mean_output_tokens": round(total_output_tokens / n_evaluated, 1) if n_evaluated else 0,
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    summary_path.write_text(json.dumps(summary, indent=2))
     return summary
 
 

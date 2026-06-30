@@ -9,6 +9,7 @@ import pytest
 
 from lean_verify import (
     VerifyResult,
+    _find_lean,
     _make_lean_snippet,
     _parse_state,
     safety_check,
@@ -16,7 +17,7 @@ from lean_verify import (
     verify_tactic,
 )
 
-LEAN_AVAILABLE = shutil.which("lean") is not None
+LEAN_AVAILABLE = _find_lean() is not None
 
 # ---------------------------------------------------------------------------
 # Safety checks (pure Python — always run)
@@ -73,9 +74,10 @@ class TestParseState:
         hyps, goal = _parse_state("n : Nat")
         assert goal is None
 
-    def test_instance_dummy_returns_none(self):
+    def test_instance_dummy_becomes_typeclass_binder(self):
         hyps, goal = _parse_state("inst✝ : Inhabited Nat\n⊢ True")
-        assert goal is None
+        assert hyps == ["[Inhabited Nat]"]
+        assert goal == "True"
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +98,15 @@ class TestMakeLeanSnippet:
         assert "True" in s
         assert "trivial" in s
 
-    def test_instance_state_returns_none(self):
+    def test_instance_state_becomes_typeclass_binder(self):
         s = _make_lean_snippet("inst✝ : Inhabited Nat\n⊢ True", "trivial")
-        assert s is None
+        assert s is not None
+        assert "[Inhabited Nat]" in s
+
+    def test_universe_declaration_for_type_state(self):
+        s = _make_lean_snippet("A : Type u_1\n⊢ True", "trivial")
+        assert s is not None
+        assert "universe u_1" in s
 
     def test_missing_goal_returns_none(self):
         s = _make_lean_snippet("n : Nat", "simp")
