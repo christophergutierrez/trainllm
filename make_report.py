@@ -28,15 +28,31 @@ from pathlib import Path
 # (where it lives in scripts/ but the user runs it from the bundle root).
 _HERE = Path(__file__).parent
 _ROOT = _HERE.parent if _HERE.name == "scripts" else _HERE
-DEFAULT_EVAL_DIR = _ROOT / "reports" / "lean_eval"
+# Look in results/ first (GB10 runs), fall back to reports/lean_eval/ (Mac bundle)
+_RESULTS = _ROOT / "results"
+_LEGACY = _ROOT / "reports" / "lean_eval"
+DEFAULT_EVAL_DIR = _RESULTS if _RESULTS.exists() else _LEGACY
 DEFAULT_OUTPUT = _ROOT / "reports" / "REPORT.md"
 
-RUN_ORDER = ["base-7b", "target-7b", "draft-0.5b", "speculative"]
+RUN_ORDER = [
+    "base-7b", "base-0.5b",
+    "target-7b", "target-0.5b", "target-7b-with-context",
+    "draft-0.5b", "speculative",
+    "frontier-no-context", "frontier-with-context",
+    "frontier-api-no-context", "frontier-api-with-context",
+]
 RUN_LABELS = {
-    "base-7b":     "Base 7B (untuned)",
-    "target-7b":   "Fused 7B (fine-tuned)",
-    "draft-0.5b":  "Fused 0.5B (draft only)",
-    "speculative": "Speculative 7B + 0.5B draft",
+    "base-7b":            "Base 7B (untuned)",
+    "base-0.5b":          "Base 0.5B (untuned)",
+    "target-7b":          "Fine-tuned 7B",
+    "target-0.5b":        "Fine-tuned 0.5B",
+    "target-7b-with-context": "Fine-tuned 7B + retrieved context",
+    "draft-0.5b":         "Fine-tuned 0.5B (draft only)",
+    "speculative":        "Speculative 7B + 0.5B draft",
+    "frontier-no-context": "Frontier plan/UI (zero-shot)",
+    "frontier-with-context": "Frontier plan/UI (few-shot, training context)",
+    "frontier-api-no-context": "Opus 4.8 (zero-shot)",
+    "frontier-api-with-context": "Opus 4.8 (few-shot, training context)",
 }
 
 
@@ -86,10 +102,16 @@ def _load_sample_predictions(eval_dir: Path, run_name: str,
     if not pred_path.exists():
         return [], []
     rows = [json.loads(l) for l in pred_path.read_text().splitlines() if l.strip()]
-    passing = [r for r in rows
-               if r.get("lean_result") and r["lean_result"].get("lean_ok") is True][:n_pass]
-    failing = [r for r in rows
-               if r.get("lean_result") and r["lean_result"].get("lean_ok") is False][:n_fail]
+
+    def _lean_ok(r: dict) -> bool | None:
+        # Support both flat lean_pass (lean_eval.py) and nested lean_result.lean_ok (legacy)
+        if "lean_pass" in r:
+            return r["lean_pass"]
+        lr = r.get("lean_result")
+        return lr.get("lean_ok") if lr else None
+
+    passing = [r for r in rows if _lean_ok(r) is True][:n_pass]
+    failing = [r for r in rows if _lean_ok(r) is False][:n_fail]
     return passing, failing
 
 
@@ -167,23 +189,29 @@ def generate_report(
           "Run `lean_eval.py` to generate results._".format(
               str(eval_dir).replace(str(_HERE) + "/", "")))
     else:
-        w("| Run | Records | Compile Pass | Safety Fail | Mean Latency (s) | Tokens/s | Notes |")
-        w("|-----|---------|-------------|-------------|-----------------|----------|-------|")
+        w("| Run | Records | Evaluated | Compile Pass | Safety Fail | Latency (s) | Tokens/s | Mean In Toks | Mean Out Toks | Notes |")
+        w("|-----|---------|-----------|-------------|-------------|------------|----------|-------------|--------------|-------|")
         for key in RUN_ORDER + [k for k in sorted(runs) if k not in RUN_ORDER]:
             if key not in runs:
                 continue
             s = runs[key]["summary"]
             label = RUN_LABELS.get(key, key)
             n = s.get("n_total", "—")
+            n_eval = s.get("n_evaluated", n)  # n_evaluated added in lean_eval.py v2
             pass_rate = _pct(s.get("compile_pass_rate"))
             safety_fail = s.get("n_safety_fail", "—")
             latency = _fmt(s.get("mean_elapsed_s"))
             tps = _fmt(s.get("mean_tps"))
+            # API runs record per-call token counts; local runs do not
+            in_toks = _fmt(s.get("mean_input_tokens"), 0)
+            out_toks = _fmt(s.get("mean_output_tokens"), 0)
             notes = ""
             if s.get("draft_model"):
                 nd = s.get("num_draft_tokens", "?")
                 notes = f"{nd} draft tokens"
-            w(f"| {label} | {n} | {pass_rate} | {safety_fail} | {latency} | {tps} | {notes} |")
+            elif s.get("mode") == "with-context":
+                notes = f"{s.get('n_shots', '?')}-shot"
+            w(f"| {label} | {n} | {n_eval} | {pass_rate} | {safety_fail} | {latency} | {tps} | {in_toks} | {out_toks} | {notes} |")
     w("")
 
     # -----------------------------------------------------------------------
@@ -219,9 +247,9 @@ def generate_report(
                 w(r.get("state_before", ""))
                 w("```")
                 w(f"**Generated:** `{r.get('generated_tactic', '')}`  ")
-                lean = r.get("lean_result") or {}
-                if lean.get("stderr"):
-                    w(f"**Lean error:** `{lean['stderr'][:120].strip()}`")
+                lean_stderr = r.get("lean_stderr") or (r.get("lean_result") or {}).get("stderr", "")
+                if lean_stderr:
+                    w(f"**Lean error:** `{lean_stderr[:120].strip()}`")
                 w("")
 
     # -----------------------------------------------------------------------

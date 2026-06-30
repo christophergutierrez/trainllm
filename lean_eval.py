@@ -2,26 +2,43 @@
 """
 Lean tactic evaluation runner.
 
-Reads test.jsonl, generates one tactic per record using an MLX model,
-safety-checks each tactic, optionally verifies with Lean, and writes
-per-record prediction JSONL + compiler_errors.jsonl + run_config.json +
-summary JSON.  Output field names match the spec in FULL_EVAL.md.
+Reads test.jsonl, generates one tactic per record using an LLM, safety-checks
+each tactic, optionally verifies with Lean, and writes per-record prediction
+JSONL + compiler_errors.jsonl + run_config.json + summary JSON.  Output field
+names match the spec in FULL_EVAL.md.
 
-Requires mlx_lm on Mac (minimum version 0.21.0):
-  pip install "mlx-lm>=0.21.0"
+Backends
+--------
+  mlx   (default)  Apple MLX — requires Mac and mlx-lm>=0.21.0
+  hf               HuggingFace/Unsloth — for GB10 validation; accepts PEFT
+                   adapter paths or base HF model names
+  mock             Returns predetermined tactics (no model needed); use to
+                   validate the full pipeline — data loading, Lean verification,
+                   output format, make_report.py — without loading any weights
 
 Usage:
-  # Target-only (no speculative decoding)
+  # Production (Mac)
   python3 scripts/lean_eval.py --model fused-7b-lean \\
       --test data/lean_stat/test.jsonl \\
       --output reports/lean_eval/target-7b
 
-  # Speculative decoding
+  # Speculative decoding (Mac)
   python3 scripts/lean_eval.py --model fused-7b-lean \\
-      --draft-model fused-0.5b-lean \\
-      --num-draft-tokens 5 \\
+      --draft-model fused-0.5b-lean --num-draft-tokens 5 \\
       --test data/lean_stat/test.jsonl \\
       --output reports/lean_eval/speculative
+
+  # GB10 pipeline validation (HF/PEFT)
+  python3 lean_eval.py --backend hf \\
+      --model adapters/7b-lean/final \\
+      --test data/lean_stat/test.jsonl --limit 20 \\
+      --output reports/lean_eval/hf-target-7b
+
+  # Pipeline-only smoke test (no model, no GPU)
+  python3 lean_eval.py --backend mock \\
+      --model unused --limit 20 \\
+      --test data/lean_stat/test.jsonl \\
+      --output reports/lean_eval/mock
 """
 
 from __future__ import annotations
@@ -29,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -47,12 +65,121 @@ CHAT_TEMPLATE = (
     "<|im_start|>assistant\n"
 )
 
+# Cycling tactics for the mock backend — cover common Lean proof patterns
+_MOCK_TACTICS = [
+    "simp", "rfl", "omega", "trivial", "exact h",
+    "ring", "linarith", "norm_num", "exact?", "apply?",
+]
 
-def _check_mlx_version() -> None:
+
+# ---------------------------------------------------------------------------
+# Backend factories — each returns (generate_fn, count_tokens_fn)
+# ---------------------------------------------------------------------------
+
+def _make_mock_backend():
+    counter = [0]
+
+    def generate_fn(prompt: str, max_tokens: int, num_draft_tokens: int,
+                    temp: float) -> tuple[str, float]:
+        tactic = _MOCK_TACTICS[counter[0] % len(_MOCK_TACTICS)]
+        counter[0] += 1
+        return tactic, 0.001
+
+    def count_tokens_fn(text: str) -> int:
+        return len(text.split())
+
+    return generate_fn, count_tokens_fn
+
+
+def _make_hf_backend(model_path: str, draft_model_path: str | None):
+    import json as _json
+    import os
+    import tempfile
+    import shutil
+
+    # Ensure HF_HOME points to the local cache
+    if not os.environ.get("HF_HOME"):
+        candidate = Path.home() / "llm" / "models" / "hf"
+        if candidate.exists():
+            os.environ["HF_HOME"] = str(candidate)
+
+    def _resolve_adapter(path: str) -> str:
+        """If path is a PEFT adapter with a HF repo name as base, patch it."""
+        p = Path(path)
+        cfg_path = p / "adapter_config.json"
+        if not cfg_path.exists():
+            return path  # base model path, pass through
+
+        cfg = _json.loads(cfg_path.read_text())
+        base = cfg.get("base_model_name_or_path", "")
+        if Path(base).exists():
+            return path  # already a local path
+
+        # base is a HF repo name — resolve via local cache
+        try:
+            from huggingface_hub import snapshot_download
+            local_base = snapshot_download(base, local_files_only=True)
+        except Exception as exc:
+            sys.exit(
+                f"Cannot resolve base model '{base}' from local cache.\n"
+                f"Set HF_HOME to your model cache or download the model first.\n"
+                f"Error: {exc}"
+            )
+        tmp = tempfile.mkdtemp(prefix="lean_eval_adapter_")
+        shutil.copytree(str(p), tmp + "/adapter", dirs_exist_ok=True)
+        cfg["base_model_name_or_path"] = local_base
+        (Path(tmp) / "adapter" / "adapter_config.json").write_text(
+            _json.dumps(cfg, indent=2))
+        return tmp + "/adapter"
+
+    try:
+        from unsloth import FastLanguageModel
+    except ImportError:
+        sys.exit("unsloth not found. Install it or use --backend mlx on Mac.")
+
+    import torch
+
+    resolved = _resolve_adapter(model_path)
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        resolved, max_seq_length=32768, load_in_4bit=False, dtype=None,
+    )
+    FastLanguageModel.for_inference(model)
+
+    # Draft model is not supported in HF backend (speculative needs MLX)
+    if draft_model_path:
+        print("WARNING: --draft-model ignored for --backend hf "
+              "(speculative decoding requires MLX)", file=sys.stderr)
+
+    def generate_fn(prompt: str, max_tokens: int, num_draft_tokens: int,
+                    temp: float) -> tuple[str, float]:
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        t0 = time.monotonic()
+        do_sample = temp > 0
+        with torch.no_grad():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temp if do_sample else None,
+                do_sample=do_sample,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        elapsed = time.monotonic() - t0
+        text = tokenizer.decode(
+            out[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+        return text.split("<|im_end|>")[0].strip(), elapsed
+
+    def count_tokens_fn(text: str) -> int:
+        ids = tokenizer.encode(text)
+        return len(ids) if isinstance(ids, list) else ids.shape[-1]
+
+    return generate_fn, count_tokens_fn
+
+
+def _make_mlx_backend(model_path: str, draft_model_path: str | None):
     try:
         import importlib.metadata
-        ver = importlib.metadata.version("mlx-lm")
         from packaging.version import Version
+        ver = importlib.metadata.version("mlx-lm")
         if Version(ver) < Version(MLX_LM_MIN_VERSION):
             print(f"WARNING: mlx-lm {ver} < required {MLX_LM_MIN_VERSION}. "
                   f"Upgrade: pip install 'mlx-lm>={MLX_LM_MIN_VERSION}'",
@@ -60,48 +187,55 @@ def _check_mlx_version() -> None:
     except Exception:
         pass
 
-
-def _build_prompt(state_before: str) -> str:
-    user = f"Given the Lean 4 state:\n{state_before}\nProvide the next tactical step."
-    return CHAT_TEMPLATE.format(system=SYSTEM_PROMPT, user=user)
-
-
-def _load_mlx_model(model_path: str, draft_model_path: str | None):
     try:
-        from mlx_lm import load
+        from mlx_lm import load, generate as mlx_generate
     except ImportError:
-        sys.exit("mlx_lm not found. Install: pip install 'mlx-lm>=0.21.0'")
+        sys.exit("mlx_lm not found. Install: pip install 'mlx-lm>=0.21.0'\n"
+                 "On GB10, use --backend hf instead.")
+
     model, tokenizer = load(model_path)
-    draft = None
-    if draft_model_path:
-        draft, _ = load(draft_model_path)
-    return model, tokenizer, draft
+    draft = load(draft_model_path)[0] if draft_model_path else None
 
+    import inspect
+    _verbose_supported = "verbose" in inspect.signature(mlx_generate).parameters
 
-def _generate(model, tokenizer, draft, prompt: str, max_tokens: int,
-              num_draft_tokens: int, temp: float) -> tuple[str, float]:
-    from mlx_lm import generate
-    t0 = time.monotonic()
-    kwargs: dict = dict(max_tokens=max_tokens, temp=temp)
-    # verbose kwarg added in mlx-lm 0.19; pass only if accepted
-    try:
-        import inspect
-        if "verbose" in inspect.signature(generate).parameters:
+    def generate_fn(prompt: str, max_tokens: int, num_draft_tokens: int,
+                    temp: float) -> tuple[str, float]:
+        t0 = time.monotonic()
+        kwargs: dict = dict(max_tokens=max_tokens, temp=temp)
+        if _verbose_supported:
             kwargs["verbose"] = False
-    except Exception:
-        pass
-    if draft is not None:
-        kwargs["draft_model"] = draft
-        kwargs["num_draft_tokens"] = num_draft_tokens
-    response = generate(model, tokenizer, prompt=prompt, **kwargs)
-    elapsed = time.monotonic() - t0
-    response = response.split("<|im_end|>")[0].strip()
-    return response, elapsed
+        if draft is not None:
+            kwargs["draft_model"] = draft
+            kwargs["num_draft_tokens"] = num_draft_tokens
+        response = mlx_generate(model, tokenizer, prompt=prompt, **kwargs)
+        elapsed = time.monotonic() - t0
+        return response.split("<|im_end|>")[0].strip(), elapsed
+
+    def count_tokens_fn(text: str) -> int:
+        ids = tokenizer.encode(text)
+        return len(ids) if isinstance(ids, list) else ids.shape[-1]
+
+    return generate_fn, count_tokens_fn
 
 
-def _count_tokens(text: str, tokenizer) -> int:
-    ids = tokenizer.encode(text)
-    return len(ids) if isinstance(ids, list) else ids.shape[-1]
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _user_prompt(state_before: str) -> str:
+    return f"Given the Lean 4 state:\n{state_before}\nProvide the next tactical step."
+
+
+def _build_prompt(state_before: str, context_examples: list | None = None) -> str:
+    context_examples = context_examples or []
+    parts = [f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"]
+    for example in context_examples:
+        parts.append(f"<|im_start|>user\n{_user_prompt(example.state_before)}<|im_end|>\n")
+        parts.append(f"<|im_start|>assistant\n{example.tactic}<|im_end|>\n")
+    parts.append(f"<|im_start|>user\n{_user_prompt(state_before)}<|im_end|>\n")
+    parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
 
 
 def _git_commit() -> str:
@@ -114,10 +248,15 @@ def _git_commit() -> str:
         return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Main evaluation loop
+# ---------------------------------------------------------------------------
+
 def run_eval(
     model_path: str,
     test_path: Path,
     out_dir: Path,
+    backend: str = "mlx",
     draft_model_path: str | None = None,
     num_draft_tokens: int = 5,
     max_tokens: int = 256,
@@ -125,10 +264,16 @@ def run_eval(
     limit: int | None = None,
     lean_timeout: int = 60,
     skip_lean: bool = False,
+    context_train_path: Path | None = None,
+    n_shots: int = 0,
+    max_context_state_chars: int = 1200,
+    lean_project: Path | None = None,
+    max_state_chars: int | None = None,
 ) -> dict:
+    sys.path.insert(0, str(Path(__file__).parent))
     from lean_verify import safety_check, verify_tactic
+    from lean_context import extract_state_tactic, load_examples, select_context_examples
 
-    _check_mlx_version()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     records = []
@@ -140,9 +285,13 @@ def run_eval(
     if limit is not None:
         records = records[:limit]
 
-    # Write run config
+    context_pool = []
+    if context_train_path is not None and n_shots > 0:
+        context_pool = load_examples(context_train_path)
+
     run_cfg = {
         "model": model_path,
+        "backend": backend,
         "draft_model": draft_model_path,
         "num_draft_tokens": num_draft_tokens if draft_model_path else None,
         "test_path": str(test_path),
@@ -150,13 +299,24 @@ def run_eval(
         "temp": temp,
         "limit": limit,
         "skip_lean": skip_lean,
+        "lean_project": str(lean_project) if lean_project else None,
+        "context_train_path": str(context_train_path) if context_train_path else None,
+        "n_shots": n_shots,
+        "context_retrieval": "lexical_jaccard" if context_pool else None,
+        "max_context_state_chars": max_context_state_chars if context_pool else None,
+        "max_state_chars": max_state_chars,
         "git_commit": _git_commit(),
         "platform": platform.platform(),
         "python": sys.version,
     }
     (out_dir / "run_config.json").write_text(json.dumps(run_cfg, indent=2))
 
-    model, tokenizer, draft = _load_mlx_model(model_path, draft_model_path)
+    if backend == "mock":
+        generate_fn, count_tokens_fn = _make_mock_backend()
+    elif backend == "hf":
+        generate_fn, count_tokens_fn = _make_hf_backend(model_path, draft_model_path)
+    else:
+        generate_fn, count_tokens_fn = _make_mlx_backend(model_path, draft_model_path)
 
     pred_path = out_dir / "predictions.jsonl"
     err_path = out_dir / "compiler_errors.jsonl"
@@ -168,30 +328,27 @@ def run_eval(
     total_tokens = 0
     total_elapsed = 0.0
 
+    n_skipped_size = 0
     with open(pred_path, "w") as pred_f, open(err_path, "w") as err_f:
         for i, rec in enumerate(records):
-            convs = rec.get("conversations", [])
-            if convs:
-                state_before = expected_tactic = ""
-                for c in convs:
-                    if c.get("from") == "human":
-                        val = c.get("value", "")
-                        import re
-                        m = re.search(
-                            r"Given the Lean 4 state:\n(.*?)\nProvide", val, re.S)
-                        state_before = m.group(1).strip() if m else val
-                    elif c.get("from") == "gpt":
-                        expected_tactic = c.get("value", "").strip()
-            else:
-                state_before = rec.get("state_before", "")
-                expected_tactic = rec.get("tactic", "")
+            example = extract_state_tactic(rec, index=i)
+            state_before = example.state_before
+            expected_tactic = example.tactic
 
-            prompt = _build_prompt(state_before)
-            gen_text, elapsed = _generate(model, tokenizer, draft, prompt,
-                                          max_tokens=max_tokens,
-                                          num_draft_tokens=num_draft_tokens,
-                                          temp=temp)
-            n_tokens = _count_tokens(gen_text, tokenizer)
+            if max_state_chars is not None and len(state_before) > max_state_chars:
+                n_skipped_size += 1
+                continue
+
+            context_examples = select_context_examples(
+                state_before,
+                context_pool,
+                n_shots=n_shots,
+                max_state_chars=max_context_state_chars,
+            )
+
+            prompt = _build_prompt(state_before, context_examples)
+            gen_text, elapsed = generate_fn(prompt, max_tokens, num_draft_tokens, temp)
+            n_tokens = count_tokens_fn(gen_text)
             tps = n_tokens / elapsed if elapsed > 0 else 0.0
             total_tokens += n_tokens
             total_elapsed += elapsed
@@ -203,7 +360,8 @@ def run_eval(
             lean_pass = None
             lean_stdout = lean_stderr = ""
             if not forbidden and not skip_lean:
-                vr = verify_tactic(state_before, gen_text, timeout=lean_timeout)
+                vr = verify_tactic(state_before, gen_text, timeout=lean_timeout,
+                                   project_dir=lean_project)
                 lean_pass = vr.lean_ok
                 lean_stdout = vr.stdout
                 lean_stderr = vr.stderr
@@ -219,6 +377,7 @@ def run_eval(
             row = {
                 "index": i,
                 "prompt": prompt,
+                "context_examples": [ex.to_dict() for ex in context_examples],
                 "state_before": state_before,
                 "expected_tactic": expected_tactic,
                 "generated_text": gen_text,
@@ -244,13 +403,17 @@ def run_eval(
                   f"lean={lean_pass} tps={tps:.1f}", flush=True)
 
     n_total = len(records)
+    n_evaluated = n_total - n_skipped_size
     lean_eligible = n_lean_pass + n_lean_fail
     summary = {
         "model": model_path,
+        "backend": backend,
         "draft_model": draft_model_path,
         "num_draft_tokens": num_draft_tokens if draft_model_path else None,
         "test_path": str(test_path),
         "n_total": n_total,
+        "n_skipped_size": n_skipped_size,
+        "n_evaluated": n_evaluated,
         "n_safety_fail": n_safety_fail,
         "n_lean_pass": n_lean_pass,
         "n_lean_fail": n_lean_fail,
@@ -269,29 +432,39 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model", required=True,
-                   help="Path to fused MLX model directory")
+                   help="Model path: fused MLX dir (mlx), PEFT adapter dir or HF "
+                        "repo name (hf), or any string (mock)")
+    p.add_argument("--backend", choices=["mlx", "hf", "mock"], default="mlx",
+                   help="Inference backend (default: mlx)")
     p.add_argument("--draft-model", default=None,
-                   help="Path to fused draft MLX model (enables speculative decoding)")
+                   help="Draft model path for speculative decoding (mlx backend only)")
     p.add_argument("--num-draft-tokens", type=int, default=5)
-    p.add_argument("--test", type=Path, default=Path("data/lean_stat/test.jsonl"),
-                   help="Test JSONL file (default: data/lean_stat/test.jsonl)")
-    p.add_argument("--output", type=Path,
-                   default=Path("reports/lean_eval/run"),
-                   help="Output directory for predictions.jsonl, summary.json, etc.")
+    p.add_argument("--test", type=Path, default=Path("data/lean_stat/test.jsonl"))
+    p.add_argument("--output", type=Path, default=Path("reports/lean_eval/run"))
     p.add_argument("--max-tokens", type=int, default=256)
-    p.add_argument("--temp", type=float, default=0.0,
-                   help="Sampling temperature (0 = greedy)")
-    p.add_argument("--limit", type=int, default=None,
-                   help="Cap number of test records (useful for smoke tests)")
+    p.add_argument("--temp", type=float, default=0.0)
+    p.add_argument("--limit", type=int, default=None)
     p.add_argument("--lean-timeout", type=int, default=60)
-    p.add_argument("--skip-lean", action="store_true",
-                   help="Skip Lean compilation (safety check only)")
+    p.add_argument("--skip-lean", action="store_true")
+    p.add_argument("--lean-project", type=Path, default=None,
+                   help="Path to a Lake project root (e.g. ~/git_home/lean-stat-learning-theory). "
+                        "When set, compilation uses `lake env lean` so SLT/Mathlib identifiers resolve.")
+    p.add_argument("--context-train", type=Path, default=None,
+                   help="Training JSONL used to retrieve few-shot context examples")
+    p.add_argument("--n-shots", type=int, default=0,
+                   help="Number of retrieved examples to add before each query")
+    p.add_argument("--max-context-state-chars", type=int, default=1200,
+                   help="Skip context candidates with states longer than this")
+    p.add_argument("--max-state-chars", type=int, default=None,
+                   help="Skip evaluation records where the state exceeds this many chars "
+                        "(avoids OOM on deeply nested Lean terms)")
     args = p.parse_args()
 
     summary = run_eval(
         model_path=args.model,
         test_path=args.test,
         out_dir=args.output,
+        backend=args.backend,
         draft_model_path=args.draft_model,
         num_draft_tokens=args.num_draft_tokens,
         max_tokens=args.max_tokens,
@@ -299,6 +472,11 @@ def main() -> None:
         limit=args.limit,
         lean_timeout=args.lean_timeout,
         skip_lean=args.skip_lean,
+        lean_project=args.lean_project,
+        context_train_path=args.context_train,
+        n_shots=args.n_shots,
+        max_context_state_chars=args.max_context_state_chars,
+        max_state_chars=args.max_state_chars,
     )
     print("\n=== Summary ===")
     print(json.dumps(summary, indent=2))
