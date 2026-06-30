@@ -24,9 +24,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Use CWD as root so the script works both from repo root and from bundle
+# (where it lives in scripts/ but the user runs it from the bundle root).
 _HERE = Path(__file__).parent
-DEFAULT_EVAL_DIR = _HERE / "reports" / "lean_eval"
-DEFAULT_OUTPUT = _HERE / "reports" / "REPORT.md"
+_ROOT = _HERE.parent if _HERE.name == "scripts" else _HERE
+DEFAULT_EVAL_DIR = _ROOT / "reports" / "lean_eval"
+DEFAULT_OUTPUT = _ROOT / "reports" / "REPORT.md"
 
 RUN_ORDER = ["base-7b", "target-7b", "draft-0.5b", "speculative"]
 RUN_LABELS = {
@@ -123,7 +126,7 @@ def generate_report(
     w("")
     w("| Split | Records |")
     w("|-------|---------|")
-    data_dir = _HERE / "data" / "lean_stat"
+    data_dir = _ROOT / "data" / "lean_stat"
     counts: dict[str, str] = {}
     for split in ("train", "valid", "test"):
         f = data_dir / f"{split}.jsonl"

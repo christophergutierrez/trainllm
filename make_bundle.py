@@ -55,7 +55,8 @@ FORBIDDEN_PATTERNS = [
     re.compile(r"/checkpoint-\d+"),
     re.compile(r"/\.cache/"),
     re.compile(r"/models/hf/"),
-    re.compile(r"\.safetensors$"),  # model weights — large; only in fused dirs
+    # safetensors are allowed in fused-*/ (model weights) but not in adapters/ or lora/
+    re.compile(r"/(lora|adapters)/.*\.safetensors$"),
 ]
 
 # Text files to scan for absolute /home/... paths.
@@ -128,20 +129,25 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
     # Docs
     # -----------------------------------------------------------------------
     docs_src = _HERE / "docs" / "lean_speculative"
-    for doc in ["README.md", "RUNBOOK.md", "FULL_EVAL.md"]:
-        src = docs_src / doc
+    doc_map = {
+        "BUNDLE_README.md": "README.md",  # bundle gets its own standalone README
+        "RUNBOOK.md": "RUNBOOK.md",
+        "FULL_EVAL.md": "FULL_EVAL.md",
+    }
+    for src_name, dst_name in doc_map.items():
+        src = docs_src / src_name
         if not src.exists():
             errors.append(f"missing doc: {src.relative_to(_HERE)}")
             ok = False
             continue
         if not validate_only:
-            _copy(src, bundle_dir / doc)
+            _copy(src, bundle_dir / dst_name)
 
     # -----------------------------------------------------------------------
-    # Scripts
+    # Scripts (also include make_bundle.py so the bundle is self-documenting)
     # -----------------------------------------------------------------------
     scripts_dst = bundle_dir / "scripts"
-    for script in ["lean_verify.py", "lean_eval.py", "make_report.py"]:
+    for script in ["lean_verify.py", "lean_eval.py", "make_report.py", "make_bundle.py"]:
         src = _HERE / script
         if not src.exists():
             errors.append(f"missing script: {script}")
@@ -158,7 +164,7 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
         _copy_tree(harness_src, bundle_dir / "eval" / "lean_harness")
 
     # -----------------------------------------------------------------------
-    # Data samples
+    # Data — full test split + samples
     # -----------------------------------------------------------------------
     if not validate_only:
         fixture_src = harness_src / "fixture_5.jsonl"
@@ -166,6 +172,12 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
             _copy(fixture_src, bundle_dir / "data" / "sample" / "fixture_5.jsonl")
 
         test_src = _HERE / "data" / "lean_stat" / "test.jsonl"
+        # Include the full test set so lean_eval.py default path works
+        if test_src.exists():
+            _copy(test_src, bundle_dir / "data" / "lean_stat" / "test.jsonl")
+        else:
+            errors.append("missing data/lean_stat/test.jsonl — run prepare_lean_data.py first")
+            ok = False
         _sample_test_data(test_src, bundle_dir / "data" / "sample" / "test_20.jsonl")
 
     # -----------------------------------------------------------------------

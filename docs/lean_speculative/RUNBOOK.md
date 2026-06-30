@@ -1,22 +1,24 @@
 # Lean Speculative Decoding — Runbook
 
 Step-by-step instructions for running the full evaluation on a Mac with Apple
-Silicon. Training ran on the GB10 (Linux, CUDA). Only the Mac steps are
-documented here.
+Silicon. All commands run from the **bundle root** (`lean-speculative-bundle/`).
+
+Scripts live in `scripts/` inside the bundle. Run them as
+`python3 scripts/<name>.py`, not `python3 <name>.py`.
 
 ## Prerequisites
 
-### 1. Python with MLX
+### 1. Python with mlx-lm
 
 ```bash
-python3 -m pip install mlx-lm
+pip install "mlx-lm>=0.21.0"
 ```
 
 Verify speculative decoding is available:
 
 ```bash
 python3 -m mlx_lm.generate --help | grep draft
-# should show: --draft-model and --num-draft-tokens
+# expected: --draft-model  and  --num-draft-tokens
 ```
 
 ### 2. Lean 4 via elan
@@ -27,74 +29,97 @@ source ~/.elan/env
 lean --version
 ```
 
-### 3. Clone the repo
+Add elan to your shell profile so `lean` is available in new terminal sessions:
 
 ```bash
-git clone <repo-url> trainllm
-cd trainllm
+echo 'source ~/.elan/env' >> ~/.zshrc   # zsh (default on Mac)
+# or
+echo 'source ~/.elan/env' >> ~/.bashrc  # bash
 ```
 
-## Step 1: Copy MLX adapters from GB10
+### 3. Disk and network
 
-The PEFT adapters were converted on GB10. Copy the MLX-format adapter
-directories to the Mac:
+- ~15 GB for `Qwen2.5-Coder-7B-Instruct` (auto-downloaded on first use)
+- ~1 GB for `Qwen2.5-Coder-0.5B-Instruct`
+- HuggingFace account is not required for public models, but a VPN or firewall
+  may block downloads. Set `HF_ENDPOINT` or `HUGGINGFACE_HUB_URL` if needed.
+
+## Step 1: Copy MLX adapters from the training machine
+
+The GB10 training machine produced PEFT adapters that were converted to MLX
+format. Copy them to the Mac:
 
 ```bash
-rsync -av gb10:~/git_home/trainllm/adapters/0.5b-lean-mlx/ adapters/0.5b-lean-mlx/
-rsync -av gb10:~/git_home/trainllm/adapters/7b-lean-mlx/   adapters/7b-lean-mlx/
+rsync -av gb10:~/git_home/trainllm/adapters/0.5b-lean-mlx/ \
+  ~/trainllm-repo/adapters/0.5b-lean-mlx/
+
+rsync -av gb10:~/git_home/trainllm/adapters/7b-lean-mlx/ \
+  ~/trainllm-repo/adapters/7b-lean-mlx/
 ```
 
 Verify both contain `adapters.safetensors` and `adapter_config.json`.
 
-## Step 2: Fuse adapters into standalone models (Phase 3.3–3.4)
+## Step 2: Fuse adapters into standalone MLX models (Phase 3.3–3.4)
+
+Run from inside the bundle root, placing fused models into the placeholders:
 
 ```bash
 python3 -m mlx_lm.fuse \
   --model Qwen/Qwen2.5-Coder-0.5B-Instruct \
-  --adapter-path adapters/0.5b-lean-mlx \
+  --adapter-path ~/trainllm-repo/adapters/0.5b-lean-mlx \
   --save-path fused-0.5b-lean
 
 python3 -m mlx_lm.fuse \
   --model Qwen/Qwen2.5-Coder-7B-Instruct \
-  --adapter-path adapters/7b-lean-mlx \
+  --adapter-path ~/trainllm-repo/adapters/7b-lean-mlx \
   --save-path fused-7b-lean
 ```
 
-Smoke-check both:
+Smoke-check both fused models:
 
 ```bash
 python3 -m mlx_lm.generate \
   --model fused-0.5b-lean \
-  --prompt "Given the Lean 4 state:\nn : Nat\n⊢ n + 0 = n\nProvide the next tactical step." \
+  --prompt "Given the Lean 4 state:
+n : Nat
+⊢ n + 0 = n
+Provide the next tactical step." \
   --max-tokens 32 --temp 0
 
 python3 -m mlx_lm.generate \
   --model fused-7b-lean \
-  --prompt "Given the Lean 4 state:\nn : Nat\n⊢ n + 0 = n\nProvide the next tactical step." \
+  --prompt "Given the Lean 4 state:
+n : Nat
+⊢ n + 0 = n
+Provide the next tactical step." \
   --max-tokens 32 --temp 0
 ```
 
+Both should return something like `simp` or `omega`, not an empty string.
+
 ## Step 3: Verify Lean harness (Phase 4)
 
-Quick sanity check (no model needed):
+Safety-check only (no Lean needed):
 
 ```bash
-python3 lean_verify.py --check "simp"        # → SAFE
-python3 lean_verify.py --check "sorry"       # → FORBIDDEN
-
-python3 lean_verify.py --file eval/lean_harness/Fixture.lean
-# → {"passed": true, ...}
+python3 scripts/lean_verify.py --check "simp"    # → SAFE
+python3 scripts/lean_verify.py --check "sorry"   # → FORBIDDEN
 ```
 
-Full fixture test (5 records, requires fused model):
+Compile the fixture to confirm `lean` is in PATH:
 
 ```bash
-python3 lean_eval.py \
+python3 scripts/lean_verify.py --file eval/lean_harness/Fixture.lean
+# expected: {"passed": true, ...}
+```
+
+Run the 5-record fixture through the full pipeline:
+
+```bash
+python3 scripts/lean_eval.py \
   --model fused-7b-lean \
-  --test eval/lean_harness/fixture_5.jsonl \
-  --limit 5 \
-  --output reports/lean_eval/fixture/predictions.jsonl \
-  --summary reports/lean_eval/fixture/summary.json
+  --test data/sample/fixture_5.jsonl \
+  --output reports/lean_eval/fixture
 ```
 
 ## Step 4: Baseline evaluation runs (Phase 5.1)
@@ -102,99 +127,91 @@ python3 lean_eval.py \
 ### Base 7B (untuned)
 
 ```bash
-python3 lean_eval.py \
+python3 scripts/lean_eval.py \
   --model Qwen/Qwen2.5-Coder-7B-Instruct \
   --test data/lean_stat/test.jsonl \
-  --output reports/lean_eval/base-7b/predictions.jsonl \
-  --summary reports/lean_eval/base-7b/summary.json
+  --output reports/lean_eval/base-7b
 ```
 
 ### Fused 7B target
 
 ```bash
-python3 lean_eval.py \
+python3 scripts/lean_eval.py \
   --model fused-7b-lean \
   --test data/lean_stat/test.jsonl \
-  --output reports/lean_eval/target-7b/predictions.jsonl \
-  --summary reports/lean_eval/target-7b/summary.json
+  --output reports/lean_eval/target-7b
 ```
 
 ### Fused 0.5B draft alone
 
 ```bash
-python3 lean_eval.py \
+python3 scripts/lean_eval.py \
   --model fused-0.5b-lean \
   --test data/lean_stat/test.jsonl \
-  --output reports/lean_eval/draft-0.5b/predictions.jsonl \
-  --summary reports/lean_eval/draft-0.5b/summary.json
+  --output reports/lean_eval/draft-0.5b
 ```
 
 ## Step 5: Speculative run (Phase 5.2)
 
 ```bash
-python3 lean_eval.py \
+python3 scripts/lean_eval.py \
   --model fused-7b-lean \
   --draft-model fused-0.5b-lean \
   --num-draft-tokens 5 \
   --test data/lean_stat/test.jsonl \
-  --output reports/lean_eval/speculative/predictions.jsonl \
-  --summary reports/lean_eval/speculative/summary.json
+  --output reports/lean_eval/speculative
 ```
 
 ## Step 6: Generate the report (Phase 5.3)
 
+Run from the bundle root — the script auto-detects paths relative to its
+location:
+
 ```bash
-python3 make_report.py
+python3 scripts/make_report.py
 # writes reports/REPORT.md
-```
-
-Review the report:
-
-```bash
 cat reports/REPORT.md
 ```
 
-## Step 7: Assemble the handoff bundle (Phase 6.1)
+## Quick smoke run (skip Lean, 20 records)
+
+Use `--limit 20 --skip-lean` for a fast end-to-end pipeline check:
 
 ```bash
-python3 make_bundle.py --validate-only   # check first
-python3 make_bundle.py                   # assemble
-```
+python3 scripts/lean_eval.py --model fused-7b-lean \
+  --test data/sample/test_20.jsonl --limit 20 --skip-lean \
+  --output reports/lean_eval/smoke
 
-The bundle is written to `lean-speculative-bundle/`.
-
-## Smoke run (quick sanity check for the whole pipeline)
-
-Use `--limit 5` on all eval runs and skip Lean for fast iteration:
-
-```bash
-python3 lean_eval.py --model fused-7b-lean \
-  --test data/lean_stat/test.jsonl --limit 5 --skip-lean \
-  --output /tmp/smoke.jsonl --summary /tmp/smoke-summary.json
-
-python3 lean_eval.py --model fused-7b-lean \
+python3 scripts/lean_eval.py --model fused-7b-lean \
   --draft-model fused-0.5b-lean --num-draft-tokens 5 \
-  --test data/lean_stat/test.jsonl --limit 5 --skip-lean \
-  --output /tmp/smoke-spec.jsonl --summary /tmp/smoke-spec-summary.json
+  --test data/sample/test_20.jsonl --limit 20 --skip-lean \
+  --output reports/lean_eval/smoke-speculative
 ```
 
 ## Troubleshooting
 
+**`python3: can't open file 'lean_eval.py'`**
+You are running from the bundle root but forgot the `scripts/` prefix.
+Use `python3 scripts/lean_eval.py`, not `python3 lean_eval.py`.
+
+**`mlx_lm.generate` crashes with `TypeError: unexpected keyword argument 'verbose'`**
+Your mlx-lm is older than 0.21.0. Upgrade: `pip install "mlx-lm>=0.21.0"`.
+
 **`mlx_lm.generate` crashes with "weight not found"**
 The PEFT → MLX conversion may have produced misaligned keys. Rerun
-`peft_to_mlx.py` and verify the `keys` field in `adapter_config.json` matches
-the module names in the base model.
+`peft_to_mlx.py` on the training machine and re-sync the adapter directories.
 
 **Lean verification always returns `lean_ok: null`**
-Lean is not in PATH or the goal state cannot be reconstructed as a standalone
-`example`. Run `which lean` and `lean --version` to confirm Lean is installed.
+Either `lean` is not in PATH (open a new terminal and run `source ~/.elan/env`
+or add it to your shell profile), or the goal state cannot be reconstructed as
+a standalone `example` (complex Mathlib states with `inst✝` or metavariables).
+The Limitations section of FULL_EVAL.md describes this in detail.
 
 **Speculative decoding is slower than target-only**
-Expected when the draft acceptance rate is low. The 0.5B draft was trained on
-the same data distribution, so acceptance should be reasonable. If tokens/sec
-is lower, check that both `--model` and `--draft-model` are passed correctly.
+Expected when draft acceptance rate is low. Check that both `--model` and
+`--draft-model` flags are set. If still slower, try `--num-draft-tokens 3`
+to reduce draft overhead on shorter tactics.
 
-**`mlx_lm.fuse` reports missing keys**
-Ensure `adapter_config.json` in the MLX adapter directory contains the correct
-`keys` field (module names without `base_model.model.` prefix). The
-`peft_to_mlx.py` script sets these correctly for Qwen2.5 models.
+**HuggingFace download fails**
+Ensure you have internet access. For restricted networks set:
+`export HF_ENDPOINT=https://hf-mirror.com` or configure a local mirror.
