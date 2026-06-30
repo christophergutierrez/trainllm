@@ -213,7 +213,7 @@ A full eval is considered valid only if:
 - all runs use deterministic decoding unless explicitly labeled otherwise
 - Lean verification runs automatically
 - generated artifacts are outside git-tracked source
-- report contains no absolute `/home/chris/...` paths
+- report contains no absolute `/home/<user>/...` paths
 
 ## Claims Allowed
 
