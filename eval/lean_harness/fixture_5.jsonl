@@ -1,0 +1,5 @@
+{"conversations":[{"from":"human","value":"Given the Lean 4 state:\nn : Nat\n⊢ n + 0 = n\nProvide the next tactical step."},{"from":"gpt","value":"simp"}]}
+{"conversations":[{"from":"human","value":"Given the Lean 4 state:\nn : Nat\n⊢ 0 + n = n\nProvide the next tactical step."},{"from":"gpt","value":"simp"}]}
+{"conversations":[{"from":"human","value":"Given the Lean 4 state:\n⊢ True\nProvide the next tactical step."},{"from":"gpt","value":"trivial"}]}
+{"conversations":[{"from":"human","value":"Given the Lean 4 state:\n⊢ 1 + 1 = 2\nProvide the next tactical step."},{"from":"gpt","value":"rfl"}]}
+{"conversations":[{"from":"human","value":"Given the Lean 4 state:\na b : Nat\nh : a = b\n⊢ b = a\nProvide the next tactical step."},{"from":"gpt","value":"exact h.symm"}]}
