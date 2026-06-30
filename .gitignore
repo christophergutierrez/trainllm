@@ -16,6 +16,8 @@ logs/*
 !logs/.gitkeep
 lora/
 evals/
+reports/
+lean-speculative-bundle/
 
 # Large artifacts
 models/

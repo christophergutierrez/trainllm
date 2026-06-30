@@ -11,12 +11,15 @@ lean-speculative-bundle/
   RUNBOOK.md                    step-by-step setup and execution guide
   FULL_EVAL.md                  full evaluation protocol and pass gates
   scripts/
-    lean_eval.py                evaluation runner (generate + verify)
+    lean_eval.py                evaluation runner (local MLX models)
+    lean_context.py             deterministic few-shot context retrieval
+    frontier_api_eval.py        paid frontier API baseline runner (explicit opt-in)
     lean_verify.py              Lean 4 safety checker and compiler wrapper
     make_report.py              report generator from eval summaries
   data/
     lean_stat/
       test.jsonl                1,866 held-out test records (state → tactic)
+      train.jsonl               training split (for few-shot frontier baselines)
     sample/
       fixture_5.jsonl           5-record sanity fixture
       test_20.jsonl             20-record quick-smoke subset
@@ -32,15 +35,17 @@ lean-speculative-bundle/
 ## Quick start
 
 **Prerequisites:** Mac with Apple Silicon, Python 3.10+, internet access.
+Lean is optional unless you want compiler-verified correctness.
 
 ```bash
 # 1. Install mlx-lm
 pip install "mlx-lm>=0.21.0"
 
-# 2. Install Lean 4 via elan
+# 2. Optional: install Lean 4 via elan for basic standalone verification
 curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh
 echo 'source ~/.elan/env' >> ~/.zshrc   # add to shell profile
 source ~/.elan/env
+python3 scripts/lean_verify.py --file eval/lean_harness/Fixture.lean
 
 # 3. Copy MLX adapters from the training machine and fuse
 #    (see RUNBOOK.md for the full rsync + fuse commands)
@@ -54,6 +59,31 @@ python3 scripts/lean_eval.py \
 
 # 5. Full run — see RUNBOOK.md
 ```
+
+## Optional Lean Verification Levels
+
+The evaluation can run without Lean. In that mode, predictions are still saved,
+but compiler fields such as `lean_pass` are `null`.
+
+There are two optional verification levels:
+
+- **Basic standalone verification:** install Lean with `elan` and run the
+  bundled fixture. This checks the harness and simple reconstructed goals.
+- **Full project verification:** additionally clone/build the upstream Lean
+  project outside this bundle so Mathlib and project-local declarations are
+  available for real dataset examples:
+
+```bash
+mkdir -p ~/lean-projects
+git clone https://github.com/YuanheZ/lean-stat-learning-theory \
+  ~/lean-projects/lean-stat-learning-theory
+cd ~/lean-projects/lean-stat-learning-theory
+lake exe cache get
+lake build
+```
+
+The project clone, `.lake/`, `.elan/`, and downloaded caches are local tooling
+artifacts. They are intentionally not part of this repo or bundle.
 
 ## Models
 

@@ -106,6 +106,18 @@ Primary metric:
 
 - `lean_compile_pass_rate`
 
+Lean verification is optional and has two levels:
+
+- **Basic standalone verification** installs Lean with `elan` and checks simple
+  reconstructed `example` blocks, including the bundled fixture.
+- **Full project verification** also clones/builds the upstream Lean source
+  project outside this repo so Mathlib and project-local declarations used by
+  `lean4-stat-learning-theory-novel` are available.
+
+If Lean is not installed, or if a state cannot be reconstructed by the current
+harness, `lean_pass` is `null` and the record is counted in `n_lean_skip`, not
+as a compiler failure.
+
 Secondary metrics:
 
 - exact tactic match rate
@@ -230,4 +242,3 @@ Not allowed without additional evidence:
   reconstructed context and forbidden tokens were absent.
 - "This speedup generalizes to all Macs."
 - "The cloud model cannot solve this" without a fair prompt/cost baseline.
-

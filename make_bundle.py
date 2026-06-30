@@ -147,7 +147,7 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
     # Scripts (also include make_bundle.py so the bundle is self-documenting)
     # -----------------------------------------------------------------------
     scripts_dst = bundle_dir / "scripts"
-    for script in ["lean_verify.py", "lean_eval.py", "make_report.py", "make_bundle.py"]:
+    for script in ["lean_verify.py", "lean_context.py", "lean_eval.py", "frontier_api_eval.py", "make_report.py", "make_bundle.py"]:
         src = _HERE / script
         if not src.exists():
             errors.append(f"missing script: {script}")
@@ -171,12 +171,20 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
         if fixture_src.exists():
             _copy(fixture_src, bundle_dir / "data" / "sample" / "fixture_5.jsonl")
 
-        test_src = _HERE / "data" / "lean_stat" / "test.jsonl"
+        data_src = _HERE / "data" / "lean_stat"
+        test_src = data_src / "test.jsonl"
         # Include the full test set so lean_eval.py default path works
         if test_src.exists():
             _copy(test_src, bundle_dir / "data" / "lean_stat" / "test.jsonl")
         else:
             errors.append("missing data/lean_stat/test.jsonl — run prepare_lean_data.py first")
+            ok = False
+        # Include train split so frontier API eval can sample few-shot examples
+        train_src = data_src / "train.jsonl"
+        if train_src.exists():
+            _copy(train_src, bundle_dir / "data" / "lean_stat" / "train.jsonl")
+        else:
+            errors.append("missing data/lean_stat/train.jsonl — run prepare_lean_data.py first")
             ok = False
         _sample_test_data(test_src, bundle_dir / "data" / "sample" / "test_20.jsonl")
 
@@ -188,13 +196,13 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
         reports_dir.mkdir(parents=True, exist_ok=True)
         (reports_dir / ".gitkeep").touch()
 
-        # Copy any completed reports
+        # Copy complete report evidence: summaries alone are not enough to audit
+        # whether a run used Lean verification, skipped checks, or only smoked.
         src_reports = _HERE / "reports"
         if src_reports.exists():
-            for p in src_reports.rglob("*.md"):
-                _copy(p, reports_dir / p.relative_to(src_reports))
-            for p in src_reports.rglob("summary.json"):
-                _copy(p, reports_dir / p.relative_to(src_reports))
+            for p in src_reports.rglob("*"):
+                if p.is_file():
+                    _copy(p, reports_dir / p.relative_to(src_reports))
 
     # -----------------------------------------------------------------------
     # Fused model stubs (placeholders, not the actual weights)
@@ -233,7 +241,7 @@ def assemble(bundle_dir: Path, validate_only: bool = False) -> bool:
             errors.append(f"absolute path in bundle: {issue}")
 
     # Validate source files too
-    for script in ["lean_verify.py", "lean_eval.py", "make_report.py"]:
+    for script in ["lean_verify.py", "lean_context.py", "lean_eval.py", "frontier_api_eval.py", "make_report.py"]:
         src = _HERE / script
         if src.exists():
             content = src.read_text()
