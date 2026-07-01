@@ -2,6 +2,8 @@
 config.yaml
 config.*.yaml
 !config.example.yaml
+!config.lean-14b.yaml
+!config.lean-14b-smoke.yaml
 
 # Tool config
 .devtribunal_agents/

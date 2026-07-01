@@ -16,10 +16,12 @@ Read these files first:
 Build an end-to-end workflow where training happens on the GB10 machine and the
 final fused MLX models can run on either the GB10 or a Mac laptop.
 
-The final workflow trains:
+The preferred next target workflow trains:
 
-- target model adapter: `Qwen/Qwen2.5-Coder-7B-Instruct`
+- target model adapter: `Qwen/Qwen2.5-Coder-14B-Instruct`
 - draft model adapter: `Qwen/Qwen2.5-Coder-0.5B-Instruct`
+
+Keep the 7B adapter path as a fallback baseline and comparison point.
 
 Then it converts PEFT adapters to MLX adapters, fuses them, and benchmarks:
 

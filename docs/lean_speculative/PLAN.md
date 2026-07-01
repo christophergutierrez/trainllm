@@ -135,6 +135,10 @@ Required implementation:
   - `admit`
   - `by_cases` only if later found to mask bad outputs
 - Preserve a reject report with counts and examples.
+- Add a deterministic cleanup pass that can normalize whitespace, drop malformed
+  records, and dedupe exact `(state, tactic)` pairs across the cleaned splits.
+  The cleanup output should be a separate checked-in script and a reproducible
+  output directory, not a manual one-off.
 
 Tests before moving on:
 
@@ -217,6 +221,12 @@ Tests before moving on:
 - Convergence summary exists.
 - Loss trend is sane.
 - A small generation smoke test produces Lean-like tactic text.
+
+Preferred next-step target, if the machine can support it comfortably:
+
+- Add a 14B configuration based on `Qwen/Qwen2.5-Coder-14B-Instruct`.
+- Treat 7B as the fallback baseline and 14B as the stronger capacity probe.
+- Keep the same deterministic data preparation and cleanup path for both.
 
 ## Phase 3: MLX Conversion And Fusion
 
