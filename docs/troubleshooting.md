@@ -83,6 +83,58 @@ The system turn is optional. `cycle.py` validates the first 3 records. Common mi
 3. Enable 4-bit quantization: set `training.load_in_4bit: true`.
 4. Ensure vLLM is not running: `python kill_vllm.py --kill`.
 
+### GB10 hard reset during training
+
+**Symptom:** The whole machine hard-resets during Unsloth training. The training
+log ends abruptly, sometimes with NUL bytes, and there is no Python exception,
+CUDA OOM, or useful previous-boot kernel log. This is below Python and usually
+means a GPU driver/kernel fault rather than a normal training failure.
+
+**Observed APPS 7B incident (2026-07-02):**
+- GPU: NVIDIA GB10.
+- Failed repeatedly during `apps-7b` training.
+- Earlier runs used PyTorch `2.10.0+cu130`, which warned that GB10 compute
+  capability `12.1` was outside the supported range.
+- PyTorch was upgraded to `2.12.1+cu130`, removing the `sm_121` warning, but
+  hard resets continued.
+- `CUDA_LAUNCH_BLOCKING=1` and clearing `~/.triton/cache/` did not fully solve
+  the hard resets.
+- Disabling eval did not solve it; the box still reset during normal training.
+- The final successful run happened after changing NVIDIA drivers and cleaning
+  stale GPU/cache state. It also used the conservative non-bitsandbytes path:
+  `load_in_4bit: false`, `optimizer: adamw_torch`, `eval_during_training: false`.
+- Stable driver observed for the successful run: `595.71.05`.
+- Successful output: `lora/apps-7b/final`, with `checkpoint-2400`; train runtime
+  about 5 hours, final train loss `0.5706`.
+
+**Likely cause:** Driver/platform instability on GB10 was the strongest signal.
+The 4-bit / bitsandbytes path was suspicious during debugging, but the driver
+change was the major environmental change before the successful run.
+
+**Fix path:**
+1. Upgrade/change to a GB10-compatible NVIDIA driver. Confirm with
+   `nvidia-smi --query-gpu=name,driver_version --format=csv,noheader`.
+2. Use a PyTorch build that supports GB10 `sm_121` kernels. In the Unsloth env,
+   `torch==2.12.1` removed the compute-capability warning in this repo.
+3. Clear stale compiled kernels after changing CUDA/Triton/PyTorch versions:
+   `rm -rf ~/.triton/cache/`.
+4. For the first stable retry, avoid the most exotic kernels:
+   ```yaml
+   training:
+     load_in_4bit: false
+     optimizer: adamw_torch
+     eval_during_training: false
+   ```
+5. Launch in a durable session:
+   ```bash
+   TRAINLLM_CONFIG=/path/to/config.apps-7b.yaml \
+   CUDA_LAUNCH_BLOCKING=1 \
+   ~/.unsloth/studio/unsloth_studio/bin/python3 train.py
+   ```
+6. Once a full run completes, reintroduce faster settings one at a time only if
+   needed, so driver regressions and bitsandbytes/quantization issues stay
+   distinguishable.
+
 ### Loss masking produces empty/garbage output
 
 **Symptom:** After enabling `train_on_responses_only: true`, the model generates empty strings or repeats the prompt.

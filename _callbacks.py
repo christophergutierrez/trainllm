@@ -119,3 +119,20 @@ class WSDDecayCallback(TrainerCallback):
         )
         for pg in optimizer.param_groups:
             pg["lr"] = new_lr
+
+
+class CudaCacheFlushCallback(TrainerCallback):
+    """Flush the CUDA memory cache before each eval pass.
+
+    Prevents memory fragmentation from accumulating across hundreds of training
+    steps and causing a GPU driver fault mid-eval (hard machine reset, no logs).
+    """
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        try:
+            import gc
+            import torch
+            gc.collect()
+            torch.cuda.empty_cache()
+        except Exception:
+            pass

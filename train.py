@@ -98,6 +98,17 @@ def _find_latest_checkpoint(output_dir: Path) -> str | None:
     return None
 
 
+def _checkpoint_step(checkpoint: str | None) -> int:
+    if checkpoint is None:
+        return 0
+    path = Path(checkpoint) / "trainer_state.json"
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0
+    return int(state.get("global_step") or 0)
+
+
 def main() -> None:
     # --- Argument parsing (runs before config or model loading) ---
     parser = argparse.ArgumentParser(
@@ -113,12 +124,14 @@ def main() -> None:
                         help="Maximum training steps (overrides MAX_STEPS env / cfg.training.max_steps)")
     parser.add_argument("--adapter-name", type=str, default=None, metavar="STR",
                         help="Adapter name (overrides cfg.adapter_name)")
+    parser.add_argument("--config", type=Path, default=None, metavar="PATH",
+                        help="Config YAML path (overrides TRAINLLM_CONFIG)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print resolved config and exit without loading any model")
     args = parser.parse_args()
 
     # --- Config loading (after argparse so --help exits cleanly) ---
-    cfg = _config.load()
+    cfg = _config.load(args.config)
 
     # HF_HOME must be set before importing torch/unsloth — they read it at import time.
     os.environ["HF_HOME"] = str(cfg.hf_home)
@@ -146,9 +159,10 @@ def main() -> None:
     from unsloth import FastLanguageModel  # noqa: E402
     from unsloth.chat_templates import get_chat_template, standardize_sharegpt, train_on_responses_only  # noqa: E402
     from datasets import load_dataset  # noqa: E402
+    from peft import PeftModel  # noqa: E402
     from trl import SFTTrainer  # noqa: E402
     from transformers import TrainingArguments, DataCollatorForSeq2Seq  # noqa: E402
-    from _callbacks import WSDDecayCallback, EventEmitterCallback, emit_error, emit_warning  # noqa: E402
+    from _callbacks import WSDDecayCallback, EventEmitterCallback, CudaCacheFlushCallback, emit_error, emit_warning  # noqa: E402
 
     print(f"Model:         {MODEL_NAME}")
     print(f"Adapter name:  {cfg.adapter_name}")
@@ -156,6 +170,15 @@ def main() -> None:
     print(f"Output dir:    {OUTPUT_DIR}")
     print(f"Max steps:     {MAX_STEPS}")
     print(f"Optimizer:     {cfg.training.optimizer}")
+
+    # Flush any lingering GPU allocations from previous processes before loading
+    # the model. On GB10 unified memory, dead-process allocations can persist.
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    print(f"GPU memory before load: "
+          f"{torch.cuda.memory_allocated()/1e9:.2f} GB allocated, "
+          f"{torch.cuda.memory_reserved()/1e9:.2f} GB reserved")
 
     quant_kwargs = {}
     if cfg.training.load_in_fp8:
@@ -185,19 +208,49 @@ def main() -> None:
     elif lora_init in ("false", "False"):
         lora_init = False
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=cfg.training.lora_rank,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=cfg.training.lora_alpha,
-        lora_dropout=cfg.training.lora_dropout,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=42,
-        use_rslora=cfg.training.use_rslora,
-        init_lora_weights=lora_init,
-    )
+    resume_ckpt = _find_latest_checkpoint(OUTPUT_DIR)
+    resume_adapter_only = False
+    completed_steps = _checkpoint_step(resume_ckpt)
+
+    if resume_ckpt:
+        args_path = Path(resume_ckpt) / "training_args.bin"
+        try:
+            old_args = torch.load(args_path, map_location="cpu", weights_only=False)
+            old_optim = getattr(old_args, "optim", None)
+            if str(old_optim).split(".")[-1].lower() != cfg.training.optimizer.lower():
+                resume_adapter_only = True
+                emit_warning(
+                    "FRESH_OPTIMIZER",
+                    f"Rebuilding optimizer state because checkpoint used {old_optim} "
+                    f"and config uses {cfg.training.optimizer}",
+                    {"checkpoint": Path(resume_ckpt).name, "checkpoint_optimizer": str(old_optim)},
+                )
+        except (OSError, RuntimeError, ValueError) as e:
+            resume_adapter_only = True
+            emit_warning(
+                "FRESH_OPTIMIZER",
+                f"Could not inspect checkpoint optimizer state; loading adapter weights only: {e}",
+                {"checkpoint": Path(resume_ckpt).name},
+            )
+
+    if resume_adapter_only and resume_ckpt:
+        print(f"Loading adapter weights from: {resume_ckpt}")
+        print("Rebuilding optimizer/scheduler state from current config.")
+        model = PeftModel.from_pretrained(model, resume_ckpt, is_trainable=True)
+    else:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=cfg.training.lora_rank,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=cfg.training.lora_alpha,
+            lora_dropout=cfg.training.lora_dropout,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=42,
+            use_rslora=cfg.training.use_rslora,
+            init_lora_weights=lora_init,
+        )
 
     print("Loading dataset...")
     tokenizer = get_chat_template(tokenizer, chat_template=cfg.chat_template)
@@ -225,7 +278,7 @@ def main() -> None:
     steps_per_epoch = max(1, len(dataset) // (cfg.training.batch_size * cfg.training.gradient_accumulation_steps))
     plateau = PlateauDetector(patience_steps=200, min_delta=0.002, min_steps=steps_per_epoch)
 
-    callbacks         = [plateau, EventEmitterCallback()]
+    callbacks         = [plateau, EventEmitterCallback(), CudaCacheFlushCallback()]
     actual_lr_sched   = cfg.training.lr_scheduler
     if cfg.training.lr_scheduler == "wsd":
         actual_lr_sched = "constant_with_warmup"
@@ -240,6 +293,11 @@ def main() -> None:
     neftune_alpha = cfg.training.neftune_noise_alpha
     if neftune_alpha and neftune_alpha > 0:
         print(f"NEFTune:        alpha={neftune_alpha}")
+
+    effective_max_steps = MAX_STEPS
+    if resume_adapter_only and completed_steps:
+        effective_max_steps = max(1, MAX_STEPS - completed_steps)
+        print(f"Remaining train steps: {effective_max_steps} ({completed_steps}/{MAX_STEPS} already completed)")
 
     trainer = SFTTrainer(
         model=model,
@@ -256,7 +314,7 @@ def main() -> None:
             per_device_train_batch_size=cfg.training.batch_size,
             gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
             warmup_steps=cfg.training.warmup_steps,
-            max_steps=MAX_STEPS,
+            max_steps=effective_max_steps,
             learning_rate=cfg.training.learning_rate,
             bf16=True,
             logging_steps=10,
@@ -280,15 +338,16 @@ def main() -> None:
             response_part="<|im_start|>assistant\n",
         )
 
-    # Check for a valid checkpoint to resume from
-    resume_ckpt = _find_latest_checkpoint(OUTPUT_DIR)
     if resume_ckpt:
-        emit_warning("RESUMING", f"Resuming from {Path(resume_ckpt).name}")
-        print(f"Resuming from: {resume_ckpt}")
+        if resume_adapter_only:
+            emit_warning("RESUMING", f"Loaded adapter weights from {Path(resume_ckpt).name}")
+        else:
+            emit_warning("RESUMING", f"Resuming from {Path(resume_ckpt).name}")
+            print(f"Resuming from: {resume_ckpt}")
 
     print("Starting training...")
     try:
-        trainer.train(resume_from_checkpoint=resume_ckpt)
+        trainer.train(resume_from_checkpoint=None if resume_adapter_only else resume_ckpt)
     except torch.cuda.OutOfMemoryError as e:
         step = plateau.loss_history[-1][0] if plateau.loss_history else 0
         emit_error("OOM", f"CUDA out of memory at step {step}", {"step": step, "error": str(e)})
@@ -303,8 +362,9 @@ def main() -> None:
 
     if plateau.loss_history:
         actual_steps = plateau.loss_history[-1][0]
-        if actual_steps < MAX_STEPS:
-            print(f"Training stopped early at step {actual_steps}/{MAX_STEPS}")
+        target_steps = effective_max_steps
+        if actual_steps < target_steps:
+            print(f"Training stopped early at step {actual_steps}/{target_steps}")
 
     print("Saving final adapter...")
     model.save_pretrained(str(OUTPUT_DIR / "final"))
