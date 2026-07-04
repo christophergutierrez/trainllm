@@ -10,8 +10,11 @@ import _config
 
 try:
     from transformers import TrainerCallback
+    from _callbacks import emit_warning, emit_error  # noqa: E402
 except ImportError:
     TrainerCallback = object  # type: ignore[assignment,misc]
+    def emit_warning(code, message, detail=None): pass  # type: ignore[misc]
+    def emit_error(code, message, detail=None): pass  # type: ignore[misc]
 
 
 class PlateauDetector(TrainerCallback):
@@ -128,6 +131,8 @@ def main() -> None:
                         help="Config YAML path (overrides TRAINLLM_CONFIG)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print resolved config and exit without loading any model")
+    parser.add_argument("--probe-data", type=Path, default=None, metavar="PATH",
+                        help="HumanEval JSONL to probe pass@1 every 250 steps (early quality check)")
     args = parser.parse_args()
 
     # --- Config loading (after argparse so --help exits cleanly) ---
@@ -161,8 +166,8 @@ def main() -> None:
     from datasets import load_dataset  # noqa: E402
     from peft import PeftModel  # noqa: E402
     from trl import SFTTrainer  # noqa: E402
-    from transformers import TrainingArguments, DataCollatorForSeq2Seq  # noqa: E402
-    from _callbacks import WSDDecayCallback, EventEmitterCallback, CudaCacheFlushCallback, emit_error, emit_warning  # noqa: E402
+    from transformers import EarlyStoppingCallback, TrainingArguments, DataCollatorForSeq2Seq  # noqa: E402
+    from _callbacks import WSDDecayCallback, EventEmitterCallback, CudaCacheFlushCallback, TaskEvalCallback, emit_error, emit_warning  # noqa: E402
 
     print(f"Model:         {MODEL_NAME}")
     print(f"Adapter name:  {cfg.adapter_name}")
@@ -267,10 +272,17 @@ def main() -> None:
     print(f"Dataset size: {len(dataset)} records")
 
     if cfg.training.eval_during_training:
-        split = dataset.train_test_split(test_size=0.05, seed=42)
-        train_dataset = split["train"]
-        eval_dataset  = split["test"]
-        print(f"Train split: {len(train_dataset)} | Eval split: {len(eval_dataset)}")
+        train_dataset = dataset
+        if cfg.holdout.exists():
+            eval_dataset = load_dataset("json", data_files=str(cfg.holdout), split="train")
+            eval_dataset = standardize_sharegpt(eval_dataset)
+            eval_dataset = eval_dataset.map(format_prompts, batched=True)
+            print(f"Train records: {len(train_dataset)} | Holdout records: {len(eval_dataset)}")
+        else:
+            split = dataset.train_test_split(test_size=0.05, seed=42)
+            train_dataset = split["train"]
+            eval_dataset  = split["test"]
+            print(f"Train split: {len(train_dataset)} | Eval split: {len(eval_dataset)}")
     else:
         train_dataset = dataset
         eval_dataset  = None
@@ -279,6 +291,46 @@ def main() -> None:
     plateau = PlateauDetector(patience_steps=200, min_delta=0.002, min_steps=steps_per_epoch)
 
     callbacks         = [plateau, EventEmitterCallback(), CudaCacheFlushCallback()]
+    if cfg.training.eval_during_training:
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=4))
+
+    if args.probe_data and args.probe_data.exists():
+        import json as _json
+        _probe_problems = [_json.loads(l) for l in args.probe_data.read_text().splitlines() if l.strip()][:20]
+        print(f"TaskProbe:      {len(_probe_problems)} problems from {args.probe_data}")
+
+        def _probe_fn(probe_model, probe_tokenizer, step):
+            from code_verify import clean_completion, verify_humaneval
+
+            active_model = probe_model or model
+            active_tokenizer = probe_tokenizer or tokenizer
+            active_model.eval()
+            passed = 0
+            with torch.no_grad():
+                for prob in _probe_problems:
+                    text = active_tokenizer.apply_chat_template(
+                        [
+                            {"role": "system", "content": "You are an expert Python programmer. Output only code."},
+                            {"role": "user", "content": prob["prompt"]},
+                        ],
+                        tokenize=False, add_generation_prompt=True,
+                    )
+                    inputs = active_tokenizer(text, return_tensors="pt").to(active_model.device)
+                    out = active_model.generate(**inputs, max_new_tokens=256,
+                                                do_sample=False,
+                                                pad_token_id=active_tokenizer.eos_token_id)
+                    completion = active_tokenizer.decode(
+                        out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+                    completion = clean_completion(completion)
+                    if verify_humaneval(
+                        prob["prompt"], completion, prob["test"],
+                        entry_point=prob.get("entry_point", ""),
+                    ).passed:
+                        passed += 1
+            active_model.train()
+            return passed / len(_probe_problems)
+
+        callbacks.append(TaskEvalCallback(_probe_fn, probe_every=250, min_step=100))
     actual_lr_sched   = cfg.training.lr_scheduler
     if cfg.training.lr_scheduler == "wsd":
         actual_lr_sched = "constant_with_warmup"
@@ -327,6 +379,9 @@ def main() -> None:
             save_total_limit=cfg.training.save_total_limit,
             eval_strategy="steps" if eval_dataset is not None else "no",
             eval_steps=cfg.training.save_steps if eval_dataset is not None else None,
+            load_best_model_at_end=eval_dataset is not None,
+            metric_for_best_model="eval_loss" if eval_dataset is not None else None,
+            greater_is_better=False if eval_dataset is not None else None,
         ),
     )
 

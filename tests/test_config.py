@@ -205,6 +205,9 @@ class TestRealConfigs:
         "config.acme.yaml",
         "config.qwen3-thinking.yaml",
         "config.example.yaml",
+        "config.magicoder-0.5b.yaml",
+        "config.magicoder-1.5b.yaml",
+        "config.magicoder-7b.yaml",
     ]
 
     @pytest.mark.parametrize("filename", CONFIG_FILES)

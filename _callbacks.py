@@ -136,3 +136,31 @@ class CudaCacheFlushCallback(TrainerCallback):
             torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+class TaskEvalCallback(TrainerCallback):
+    """Run a quick pass@1 probe on a small fixed set every N steps.
+
+    Catches model quality problems early (e.g. fine-tuning made things worse)
+    without waiting for the full training run to complete.
+
+    probe_fn(model, tokenizer, step) -> float   (pass rate 0.0–1.0)
+    """
+
+    def __init__(self, probe_fn, probe_every: int = 250, min_step: int = 100):
+        self.probe_fn   = probe_fn
+        self.probe_every = probe_every
+        self.min_step   = min_step
+        self.history: list[tuple[int, float]] = []
+
+    def on_step_end(self, args, state, control, model=None, tokenizer=None, **kwargs):
+        step = state.global_step
+        if step < self.min_step or step % self.probe_every != 0:
+            return
+        try:
+            rate = self.probe_fn(model, tokenizer, step)
+            self.history.append((step, rate))
+            print(f"\n[TaskProbe@{step}] pass@1 = {rate:.1%}\n", flush=True)
+            emit_event({"event": "task_probe", "step": step, "pass_rate": round(rate, 4)})
+        except Exception as e:
+            print(f"\n[TaskProbe@{step}] probe failed: {e}\n", flush=True)
