@@ -208,6 +208,8 @@ class TestRealConfigs:
         "config.magicoder-0.5b.yaml",
         "config.magicoder-1.5b.yaml",
         "config.magicoder-7b.yaml",
+        "config.mbpp-0.5b.yaml",
+        "config.mbpp-7b.yaml",
     ]
 
     @pytest.mark.parametrize("filename", CONFIG_FILES)

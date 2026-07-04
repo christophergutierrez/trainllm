@@ -133,6 +133,8 @@ def main() -> None:
                         help="Print resolved config and exit without loading any model")
     parser.add_argument("--probe-data", type=Path, default=None, metavar="PATH",
                         help="HumanEval JSONL to probe pass@1 every 250 steps (early quality check)")
+    parser.add_argument("--probe-kind", choices=["humaneval", "mbpp"], default="humaneval",
+                        help="Task format for --probe-data")
     args = parser.parse_args()
 
     # --- Config loading (after argparse so --help exits cleanly) ---
@@ -301,6 +303,7 @@ def main() -> None:
 
         def _probe_fn(probe_model, probe_tokenizer, step):
             from code_verify import clean_completion, verify_humaneval
+            from mbpp_eval import verify_python
 
             active_model = probe_model or model
             active_tokenizer = probe_tokenizer or tokenizer
@@ -322,10 +325,14 @@ def main() -> None:
                     completion = active_tokenizer.decode(
                         out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
                     completion = clean_completion(completion)
-                    if verify_humaneval(
-                        prob["prompt"], completion, prob["test"],
-                        entry_point=prob.get("entry_point", ""),
-                    ).passed:
+                    if args.probe_kind == "mbpp":
+                        ok = verify_python(completion, prob["test"]).passed
+                    else:
+                        ok = verify_humaneval(
+                            prob["prompt"], completion, prob["test"],
+                            entry_point=prob.get("entry_point", ""),
+                        ).passed
+                    if ok:
                         passed += 1
             active_model.train()
             return passed / len(_probe_problems)
